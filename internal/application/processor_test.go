@@ -80,15 +80,15 @@ func TestProcessor_WatchersAndIdempotency(t *testing.T) {
 	}
 	noopReply := func(context.Context, command.Reply) error { return nil }
 
-	// Normal chat text must not hit Redis or watchers.
-	if err := proc.Handle(context.Background(), command.Message{ID: "1", Chat: "g@g.us", Text: "hello"}, noopReply); err != nil {
+	// Normal DM chat text must not hit Redis or watchers.
+	if err := proc.Handle(context.Background(), command.Message{ID: "1", Chat: "1555@s.whatsapp.net", Group: false, Text: "hello"}, noopReply); err != nil {
 		t.Fatal(err)
 	}
 	if idem.begins != 0 || watchCalls != 0 || cmdCalls != 0 {
-		t.Fatalf("unexpected activity for plain text: begins=%d watch=%d cmd=%d", idem.begins, watchCalls, cmdCalls)
+		t.Fatalf("unexpected activity for DM text: begins=%d watch=%d cmd=%d", idem.begins, watchCalls, cmdCalls)
 	}
 
-	// Sticker message triggers watcher once; duplicate delivery is skipped.
+	// Group message triggers watcher once; duplicate delivery is skipped.
 	stMsg := command.Message{
 		ID:      "2",
 		Chat:    "g@g.us",

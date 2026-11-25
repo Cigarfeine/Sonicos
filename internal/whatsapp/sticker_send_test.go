@@ -267,3 +267,104 @@ func TestBuildSilentStickerMessage(t *testing.T) {
 		t.Fatal("expected StickerSentTS and MediaKeyTimestamp set")
 	}
 }
+
+func TestBuildStickerReactionMessage_DMAndGroup(t *testing.T) {
+	webp, off := buildTestWebpWithExif(t, 48)
+	up := buildTestUploadResponse(webp, 0x55, "/o1/v/t24/react.enc")
+	sidecar, err := computeFirstFrameSidecar(webp, up.MediaKey, off, up.FileEncSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	groupJID := types.NewJID("120363000000777", types.GroupServer)
+	msg, err := buildStickerReactionMessage(command.StickerReaction{
+		Sticker: command.Sticker{
+			Data:       webp,
+			MIMEType:   "image/webp",
+			Animated:   true,
+			ExifOffset: off,
+			Emojis:     []string{"🔥"},
+		},
+		TargetStanzaID:    "TARGET-STZ-99",
+		TargetParticipant: "15559990001@s.whatsapp.net",
+		TargetFromMe:      false,
+	}, up, off, sidecar, groupJID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wire, err := proto.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded waE2E.Message
+	if err := proto.Unmarshal(wire, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.GetStickerMessage() == nil {
+		t.Fatal("expected StickerMessage on sticker reaction")
+	}
+	assoc := decoded.GetMessageContextInfo().GetMessageAssociation()
+	if assoc == nil || assoc.GetAssociationType() != waE2E.MessageAssociation_STICKER_ANNOTATION {
+		t.Fatalf("expected STICKER_ANNOTATION, got %+v", assoc)
+	}
+	pkey := assoc.GetParentMessageKey()
+	if pkey.GetID() != "TARGET-STZ-99" || pkey.GetRemoteJID() != groupJID.String() || pkey.GetParticipant() != "15559990001@s.whatsapp.net" {
+		t.Fatalf("unexpected ParentMessageKey: %+v", pkey)
+	}
+
+	dmJID := types.NewJID("15559990002", types.DefaultUserServer)
+	dmMsg, err := buildStickerReactionMessage(command.StickerReaction{
+		Sticker:           command.Sticker{Data: webp, MIMEType: "image/webp"},
+		TargetStanzaID:    "TARGET-DM-1",
+		TargetParticipant: "15559990002@s.whatsapp.net",
+	}, up, 0, nil, dmJID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dmMsg.GetMessageContextInfo().GetMessageAssociation().GetParentMessageKey().Participant != nil {
+		t.Fatal("expected nil Participant on DM sticker reaction")
+	}
+}
+
+func TestBuildVideoNoteMessage(t *testing.T) {
+	up := buildTestUploadResponse([]byte("fake-mp4"), 0x77, "/v/t62/ptv.enc")
+	msg := buildVideoNoteMessage(command.VideoNoteReply{
+		Data:    []byte("fake-mp4"),
+		Thumb:   []byte("fake-jpg"),
+		Seconds: 7,
+		Width:   384,
+		Height:  384,
+	}, up, nil)
+
+	ptv := msg.GetPtvMessage()
+	if ptv == nil || ptv.GetWidth() != 384 || ptv.GetHeight() != 384 || ptv.GetSeconds() != 7 || ptv.GetMimetype() != "video/mp4" {
+		t.Fatalf("unexpected PtvMessage: %+v", ptv)
+	}
+	if len(ptv.GetJPEGThumbnail()) == 0 {
+		t.Fatal("expected JPEGThumbnail set on PtvMessage")
+	}
+}
+
+func TestBuildVideoMessage(t *testing.T) {
+	up := buildTestUploadResponse([]byte("fake-mp4"), 0x88, "/v/t62/vid.enc")
+	msg := buildVideoMessage(command.VideoReply{
+		Data:    []byte("fake-mp4"),
+		Thumb:   []byte("fake-jpg"),
+		Caption: "converted",
+		Seconds: 4,
+		Width:   512,
+		Height:  512,
+	}, up, nil)
+
+	if msg.GetPtvMessage() != nil {
+		t.Fatalf("expected nil PtvMessage on standard video reply, got %+v", msg.GetPtvMessage())
+	}
+	vid := msg.GetVideoMessage()
+	if vid == nil || vid.GetWidth() != 512 || vid.GetHeight() != 512 || vid.GetSeconds() != 4 || vid.GetMimetype() != "video/mp4" {
+		t.Fatalf("unexpected VideoMessage: %+v", vid)
+	}
+	if vid.GetCaption() != "converted" || len(vid.GetJPEGThumbnail()) == 0 {
+		t.Fatalf("expected Caption and JPEGThumbnail set on VideoMessage, got caption=%q thumb=%d", vid.GetCaption(), len(vid.GetJPEGThumbnail()))
+	}
+}

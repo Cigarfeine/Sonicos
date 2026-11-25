@@ -3,17 +3,31 @@ package plugins
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sonicos/whatsapp-bot/internal/command"
 )
+
+func readTestFile(t *testing.T, path string) ([]byte, error) {
+	t.Helper()
+	return os.ReadFile(path)
+}
 
 type fakeModerationStore struct {
 	bannedFile  map[string]command.BannedSticker
 	bannedAudio map[string]command.BannedSticker
 	strikes     map[string]int
 	seen        map[string]command.StickerInfo
+	shields     map[string]command.GroupShields
+	rates       map[string]int
+	stages      map[string]command.StagedMedia
+	reactionLib map[string]map[string]command.SavedReactionSticker
 }
 
 func newFakeModerationStore() *fakeModerationStore {
@@ -22,6 +36,10 @@ func newFakeModerationStore() *fakeModerationStore {
 		bannedAudio: make(map[string]command.BannedSticker),
 		strikes:     make(map[string]int),
 		seen:        make(map[string]command.StickerInfo),
+		shields:     make(map[string]command.GroupShields),
+		rates:       make(map[string]int),
+		stages:      make(map[string]command.StagedMedia),
+		reactionLib: make(map[string]map[string]command.SavedReactionSticker),
 	}
 }
 
@@ -129,6 +147,115 @@ func (f *fakeModerationStore) RememberSticker(_ context.Context, groupJID, messa
 func (f *fakeModerationStore) LookupSticker(_ context.Context, groupJID, messageID string) (command.StickerInfo, bool, error) {
 	info, ok := f.seen[groupJID+":"+messageID]
 	return info, ok, nil
+}
+
+func (f *fakeModerationStore) GetShields(_ context.Context, groupJID string) (command.GroupShields, error) {
+	s, ok := f.shields[groupJID]
+	if !ok {
+		return command.GroupShields{AntiLoudDB: -6.0}, nil
+	}
+	if s.AntiLoudDB == 0 {
+		s.AntiLoudDB = -6.0
+	}
+	return s, nil
+}
+
+func (f *fakeModerationStore) SetShield(_ context.Context, groupJID, field, value string) error {
+	s, _ := f.GetShields(context.Background(), groupJID)
+	switch field {
+	case "anti_loud":
+		s.AntiLoud = value == "1"
+	case "anti_loud_db":
+		if value == "-8.0" {
+			s.AntiLoudDB = -8.0
+		} else if value == "-5.0" {
+			s.AntiLoudDB = -5.0
+		}
+	case "anti_link":
+		s.AntiLink = value == "1"
+	case "anti_spam":
+		s.AntiSpam = value == "1"
+	case "anti_sticker_flood":
+		s.AntiStickerFlood = value == "1"
+	}
+	f.shields[groupJID] = s
+	return nil
+}
+
+func (f *fakeModerationStore) IncrementRate(_ context.Context, groupJID, bucket, userID string, _ int) (int, error) {
+	k := groupJID + ":" + bucket + ":" + userID
+	f.rates[k]++
+	return f.rates[k], nil
+}
+
+func (f *fakeModerationStore) SaveStage(_ context.Context, scopeKey string, media command.StagedMedia, _ int) error {
+	f.stages[scopeKey] = media
+	return nil
+}
+
+func (f *fakeModerationStore) LoadStage(_ context.Context, scopeKey string) (command.StagedMedia, bool, error) {
+	m, ok := f.stages[scopeKey]
+	return m, ok, nil
+}
+
+func (f *fakeModerationStore) ClearStage(_ context.Context, scopeKey string) error {
+	delete(f.stages, scopeKey)
+	return nil
+}
+
+func fakeNormReactionKey(raw string) string {
+	cleaned := strings.TrimSpace(raw)
+	cleaned = strings.ReplaceAll(cleaned, "\uFE0F", "")
+	cleaned = strings.ReplaceAll(cleaned, "\uFE0E", "")
+	return strings.ToLower(cleaned)
+}
+
+func (f *fakeModerationStore) SaveReactionSticker(_ context.Context, ownerID, emoji string, st command.SavedReactionSticker) error {
+	key := fakeNormReactionKey(emoji)
+	if ownerID == "" || key == "" || len(st.Data) == 0 {
+		return errors.New("invalid reaction sticker")
+	}
+	if f.reactionLib[ownerID] == nil {
+		f.reactionLib[ownerID] = make(map[string]command.SavedReactionSticker)
+	}
+	if strings.TrimSpace(st.Emoji) == "" {
+		st.Emoji = strings.TrimSpace(emoji)
+	}
+	if st.SavedAt == 0 {
+		st.SavedAt = time.Now().UnixNano()
+	}
+	f.reactionLib[ownerID][key] = st
+	return nil
+}
+
+func (f *fakeModerationStore) GetReactionSticker(_ context.Context, ownerID, emoji string) (command.SavedReactionSticker, bool, error) {
+	key := fakeNormReactionKey(emoji)
+	st, ok := f.reactionLib[ownerID][key]
+	return st, ok, nil
+}
+
+func (f *fakeModerationStore) DeleteReactionSticker(_ context.Context, ownerID, emoji string) (bool, error) {
+	key := fakeNormReactionKey(emoji)
+	if _, ok := f.reactionLib[ownerID][key]; !ok {
+		return false, nil
+	}
+	delete(f.reactionLib[ownerID], key)
+	return true, nil
+}
+
+func (f *fakeModerationStore) ListReactionStickers(_ context.Context, ownerID string) ([]command.SavedReactionSticker, error) {
+	items := f.reactionLib[ownerID]
+	out := make([]command.SavedReactionSticker, 0, len(items))
+	for _, st := range items {
+		out = append(out, st)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SavedAt != out[j].SavedAt {
+			return out[i].SavedAt < out[j].SavedAt
+		}
+		return out[i].Emoji < out[j].Emoji
+	})
+	return out, nil
 }
 
 type fakeGroupService struct {
@@ -385,5 +512,157 @@ func TestModeration_BotNotAdmin_WarnsWithoutDeleteOrKick(t *testing.T) {
 	}
 	if len(replies) != 1 || !strings.Contains(replies[0].Text, "removed") {
 		t.Fatalf("unexpected unban reply: %+v", replies)
+	}
+}
+
+func TestShields_AntiLink_AntiSpam_AntiStickerFlood_And_AntiLoud(t *testing.T) {
+	store := newFakeModerationStore()
+	groupJID := "120363000000333@g.us"
+	adminJID := "15550000010@s.whatsapp.net"
+	memberJID := "15550000011@s.whatsapp.net"
+	botJID := "15550009999@s.whatsapp.net"
+
+	gs := &fakeGroupService{
+		info: command.GroupInfo{
+			JID:    groupJID,
+			BotJID: botJID,
+			Participants: []command.GroupParticipant{
+				{JID: adminJID, IsAdmin: true},
+				{JID: botJID, IsAdmin: true},
+				{JID: memberJID, IsAdmin: false},
+			},
+		},
+	}
+	var replies []command.Reply
+	reply := func(_ context.Context, r command.Reply) error {
+		replies = append(replies, r)
+		return nil
+	}
+
+	// Enable antilink, antispam, antistickerflood via admin commands.
+	adminMsg := command.Message{Chat: groupJID, Sender: adminJID, Group: true, GroupService: gs, ModerationStore: store}
+	_ = antiLinkCmd(context.Background(), adminMsg, []string{"on"}, reply)
+	_ = antiSpamCmd(context.Background(), adminMsg, []string{"on"}, reply)
+	_ = antiStickerFloodCmd(context.Background(), adminMsg, []string{"on"}, reply)
+	_ = antiLoudCmd(context.Background(), adminMsg, []string{"-8"}, reply)
+	replies = nil
+	_ = shieldsStatusCmd(context.Background(), adminMsg, nil, reply)
+	if len(replies) != 1 || !strings.Contains(replies[0].Text, "Anti-Link: *ON*") || !strings.Contains(replies[0].Text, "-8.0 dB") {
+		t.Fatalf("unexpected shields status: %+v", replies)
+	}
+
+	// AntiLink blocks member link, exempts admin link.
+	replies = nil
+	_ = watchBannedStickers(context.Background(), command.Message{
+		ID: "LINK-1", Chat: groupJID, Sender: memberJID, Group: true,
+		Text: "join https://chat.whatsapp.com/abc", GroupService: gs, ModerationStore: store,
+	}, reply)
+	if len(replies) != 1 || !strings.Contains(replies[0].Text, "blocked link") || len(gs.revoked) != 1 {
+		t.Fatalf("expected antilink revoke+warn, got replies=%+v revoked=%v", replies, gs.revoked)
+	}
+	replies = nil
+	_ = watchBannedStickers(context.Background(), command.Message{
+		ID: "LINK-ADM", Chat: groupJID, Sender: adminJID, Group: true,
+		Text: "https://example.com", GroupService: gs, ModerationStore: store,
+	}, reply)
+	if len(replies) != 0 || len(gs.revoked) != 1 {
+		t.Fatalf("admin link should be exempt")
+	}
+
+	// AntiStickerFlood triggers on 5th sticker.
+	for i := 1; i <= 5; i++ {
+		replies = nil
+		_ = watchBannedStickers(context.Background(), command.Message{
+			ID: "STK-" + string(rune('0'+i)), Chat: groupJID, Sender: memberJID, Group: true,
+			Sticker: &command.StickerInfo{FileSHA256: "okhash"}, GroupService: gs, ModerationStore: store,
+		}, reply)
+	}
+	if len(replies) != 1 || !strings.Contains(replies[0].Text, "flooded stickers") {
+		t.Fatalf("expected sticker flood warning on 5th sticker, got %+v", replies)
+	}
+
+	// AntiSpam triggers on 7th text message for a fresh member.
+	spammerJID := "15550000019@s.whatsapp.net"
+	gs.info.Participants = append(gs.info.Participants, command.GroupParticipant{JID: spammerJID})
+	for i := 1; i <= 7; i++ {
+		replies = nil
+		_ = watchBannedStickers(context.Background(), command.Message{
+			ID: "TXT-" + string(rune('0'+i)), Chat: groupJID, Sender: spammerJID, Group: true,
+			Text: "hi", GroupService: gs, ModerationStore: store,
+		}, reply)
+	}
+	if len(replies) != 1 || !strings.Contains(replies[0].Text, "spammed messages") {
+		t.Fatalf("expected spam warning on 7th message, got %+v", replies)
+	}
+}
+
+func TestShields_AntiLoud_LiveFFmpeg(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not installed")
+	}
+	store := newFakeModerationStore()
+	groupJID := "120363000000444@g.us"
+	memberJID := "15550000012@s.whatsapp.net"
+	botJID := "15550009999@s.whatsapp.net"
+	_ = store.SetShield(context.Background(), groupJID, "anti_loud", "1")
+
+	quietPath := filepath.Join(t.TempDir(), "quiet.ogg")
+	loudPath := filepath.Join(t.TempDir(), "loud.ogg")
+	_ = exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-af", "volume=-20dB", "-c:a", "libopus", quietPath).Run()
+	_ = exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-af", "volume=25dB,alimiter=limit=0.99", "-c:a", "libopus", loudPath).Run()
+	quietBytes, err := readTestFile(t, quietPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loudBytes, err := readTestFile(t, loudPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gs := &fakeGroupService{
+		info: command.GroupInfo{
+			JID: groupJID, BotJID: botJID,
+			Participants: []command.GroupParticipant{{JID: botJID, IsAdmin: true}, {JID: memberJID}},
+		},
+	}
+	var replies []command.Reply
+	reply := func(_ context.Context, r command.Reply) error {
+		replies = append(replies, r)
+		return nil
+	}
+
+	// Quiet audio passes untouched.
+	_ = watchBannedStickers(context.Background(), command.Message{
+		ID: "Q1", Chat: groupJID, Sender: memberJID, Group: true,
+		Sticker: &command.StickerInfo{IsAudioSticker: true},
+		StickerAudioSource: stubMediaSource{att: command.Attachment{Kind: command.MediaAudio, Data: quietBytes}},
+		GroupService: gs, ModerationStore: store,
+	}, reply)
+	if len(replies) != 0 || len(gs.revoked) != 0 {
+		t.Fatalf("quiet audio should not trigger antiloud")
+	}
+
+	// Earrape audio triggers delete + warning when bot is admin.
+	_ = watchBannedStickers(context.Background(), command.Message{
+		ID: "L1", Chat: groupJID, Sender: memberJID, Group: true,
+		Sticker: &command.StickerInfo{IsAudioSticker: true},
+		StickerAudioSource: stubMediaSource{att: command.Attachment{Kind: command.MediaAudio, Data: loudBytes}},
+		GroupService: gs, ModerationStore: store,
+	}, reply)
+	if len(replies) != 1 || !strings.Contains(replies[0].Text, "extremely loud") || len(gs.revoked) != 1 {
+		t.Fatalf("expected earrape delete+warn, got replies=%+v revoked=%v", replies, gs.revoked)
+	}
+
+	// When bot is NOT admin, sends listen-at-your-own-risk caution without deleting.
+	gs.info.Participants[0].IsAdmin = false
+	replies = nil
+	_ = watchBannedStickers(context.Background(), command.Message{
+		ID: "L2", Chat: groupJID, Sender: memberJID, Group: true,
+		Sticker: &command.StickerInfo{IsAudioSticker: true},
+		StickerAudioSource: stubMediaSource{att: command.Attachment{Kind: command.MediaAudio, Data: loudBytes}},
+		GroupService: gs, ModerationStore: store,
+	}, reply)
+	if len(replies) != 1 || !strings.Contains(replies[0].Text, "listen at your own risk!") || len(gs.revoked) != 1 {
+		t.Fatalf("expected non-admin caution without delete, got replies=%+v revoked=%v", replies, gs.revoked)
 	}
 }

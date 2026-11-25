@@ -110,10 +110,48 @@ func TestDecodeMessage_StickersAndQuotedSoundStickers(t *testing.T) {
 		}
 	})
 
-	t.Run("image_without_caption_ignored", func(t *testing.T) {
+	t.Run("dm_image_without_caption_ignored_but_group_decoded", func(t *testing.T) {
 		img := &waE2E.Message{ImageMessage: &waE2E.ImageMessage{}}
-		if _, ok := DecodeMessage(nil, &events.Message{Info: baseInfo, Message: img}); ok {
-			t.Fatal("expected ok=false for image without caption")
+		dmInfo := baseInfo
+		dmInfo.IsGroup = false
+		if _, ok := DecodeMessage(nil, &events.Message{Info: dmInfo, Message: img}); ok {
+			t.Fatal("expected ok=false for DM image without caption")
+		}
+		if _, ok := DecodeMessage(nil, &events.Message{Info: baseInfo, Message: img}); !ok {
+			t.Fatal("expected ok=true for group message so group shields can inspect it")
+		}
+	})
+
+	t.Run("ephemeral_wrapped_quoted_reply_extracts_text_and_sound_sticker", func(t *testing.T) {
+		downloadableSound := proto.Clone(soundStickerProto).(*waE2E.Message)
+		au := downloadableSound.GetAudioStickerMessage().GetMessage().GetStickerMessage().GetAudioMessage()
+		au.DirectPath = proto.String("/v/t62.7114-24/a.enc")
+		au.MediaKey = bytes.Repeat([]byte{0x12}, 32)
+		au.FileEncSHA256 = bytes.Repeat([]byte{0x34}, 32)
+
+		ephemeralReply := &waE2E.Message{
+			EphemeralMessage: &waE2E.FutureProofMessage{
+				Message: &waE2E.Message{
+					ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+						Text: proto.String("!tomp4"),
+						ContextInfo: &waE2E.ContextInfo{
+							StanzaID:      proto.String("EPHEM-QUOTED-1"),
+							Participant:   proto.String("15550002222@s.whatsapp.net"),
+							QuotedMessage: downloadableSound,
+						},
+					},
+				},
+			},
+		}
+		msg, ok := DecodeMessage(nil, &events.Message{Info: baseInfo, Message: ephemeralReply})
+		if !ok {
+			t.Fatal("expected ok=true for EphemeralMessage-wrapped reply")
+		}
+		if msg.Text != "!tomp4" || msg.QuotedMessageID != "EPHEM-QUOTED-1" || msg.QuotedSticker == nil || !msg.QuotedSticker.IsAudioSticker {
+			t.Fatalf("unexpected ephemeral reply decode: %+v", msg)
+		}
+		if msg.StickerAudioSource == nil {
+			t.Fatal("expected StickerAudioSource decoded inside EphemeralMessage reply")
 		}
 	})
 }
