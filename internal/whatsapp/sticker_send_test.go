@@ -135,7 +135,12 @@ func TestBuildSoundStickerMessage_WireStructure(t *testing.T) {
 				Sender: types.NewJID("15550001111", types.DefaultUserServer),
 			},
 		},
-		Message: &waE2E.Message{Conversation: proto.String("!stdio")},
+		Message: &waE2E.Message{
+			VideoMessage: &waE2E.VideoMessage{
+				Caption:       proto.String("!stdio"),
+				JPEGThumbnail: bytes.Repeat([]byte{0xFF}, 64),
+			},
+		},
 	}
 
 	st := command.Sticker{
@@ -211,6 +216,9 @@ func TestBuildSoundStickerMessage_WireStructure(t *testing.T) {
 	}
 	if decodedSt.GetContextInfo().GetStanzaID() != "ORIG-MSG-1" {
 		t.Fatalf("expected quoted StanzaID ORIG-MSG-1, got %q", decodedSt.GetContextInfo().GetStanzaID())
+	}
+	if decodedSt.GetContextInfo().GetQuotedMessage().GetVideoMessage() != nil {
+		t.Fatal("expected lightweight quoted ContextInfo without bloated VideoMessage")
 	}
 	mdi := decodedSt.GetContextInfo().GetMediaDomainInfo()
 	if mdi == nil || mdi.GetMediaKeyDomain() != waE2E.MediaKeyDomain_MEDIA_KEY_DOMAIN_E2EE || !bytes.Equal(mdi.GetE2EeMediaKey(), stickerUp.MediaKey) {

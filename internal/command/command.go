@@ -8,17 +8,49 @@ import (
 	"sync"
 )
 
+type StickerInfo struct {
+	FileSHA256     string `json:"file_sha256,omitempty"`
+	AudioSHA256    string `json:"audio_sha256,omitempty"`
+	IsAudioSticker bool   `json:"is_audio_sticker,omitempty"`
+	IsAnimated     bool   `json:"is_animated,omitempty"`
+}
+
+type BannedSticker struct {
+	FileSHA256  string `json:"file_sha256,omitempty"`
+	AudioSHA256 string `json:"audio_sha256,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	AddedBy     string `json:"added_by,omitempty"`
+	AddedAt     int64  `json:"added_at,omitempty"`
+}
+
+type ModerationStore interface {
+	BanSticker(ctx context.Context, groupJID string, entry BannedSticker) error
+	UnbanSticker(ctx context.Context, groupJID, fileSHA256, audioSHA256 string) (bool, error)
+	UnbanStickerByPrefix(ctx context.Context, groupJID, hashPrefix string) (bool, error)
+	IsStickerBanned(ctx context.Context, groupJID, fileSHA256, audioSHA256 string) (BannedSticker, bool, error)
+	ListBannedStickers(ctx context.Context, groupJID string) ([]BannedSticker, error)
+	AddStrike(ctx context.Context, groupJID, userID string) (int, error)
+	GetStrikes(ctx context.Context, groupJID, userID string) (int, error)
+	ResetStrikes(ctx context.Context, groupJID, userID string) error
+	RememberSticker(ctx context.Context, groupJID, messageID string, info StickerInfo) error
+	LookupSticker(ctx context.Context, groupJID, messageID string) (StickerInfo, bool, error)
+}
+
 type Message struct {
 	ID              string
 	Chat            string
 	Sender          string
+	FromMe          bool
 	Text            string
 	Group           bool
 	MentionedJIDs   []string
 	QuotedSender    string
 	QuotedMessageID string
+	Sticker         *StickerInfo
+	QuotedSticker   *StickerInfo
 	MediaSource     MediaSource
 	GroupService    GroupService
+	ModerationStore ModerationStore
 }
 
 type MediaKind string
@@ -113,6 +145,8 @@ type GroupService interface {
 
 type Handler func(context.Context, Message, []string, ReplyFunc) error
 
+type Watcher func(context.Context, Message, ReplyFunc) error
+
 type ReplyFunc func(context.Context, Reply) error
 
 type Command struct {
@@ -126,10 +160,28 @@ type Command struct {
 type Registry struct {
 	mu       sync.RWMutex
 	commands map[string]Command
+	watchers []Watcher
 }
 
 func NewRegistry() *Registry {
 	return &Registry{commands: make(map[string]Command)}
+}
+
+func (r *Registry) Watch(w Watcher) {
+	if w == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.watchers = append(r.watchers, w)
+}
+
+func (r *Registry) Watchers() []Watcher {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]Watcher, len(r.watchers))
+	copy(out, r.watchers)
+	return out
 }
 
 func (r *Registry) Register(cmd Command) error {

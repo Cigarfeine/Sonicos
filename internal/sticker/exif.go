@@ -197,3 +197,29 @@ func FindWebpExifOffset(webp []byte) uint32 {
 	}
 	return 0
 }
+
+// CountWebpAnimFrames returns the number of ANMF chunks in a RIFF/WEBP buffer.
+func CountWebpAnimFrames(webp []byte) int {
+	if len(webp) < 12 || string(webp[:4]) != "RIFF" || string(webp[8:12]) != "WEBP" {
+		return 0
+	}
+	count := 0
+	off := 12
+	for off+8 <= len(webp) {
+		fourcc := string(webp[off : off+4])
+		size := int(binary.LittleEndian.Uint32(webp[off+4 : off+8]))
+		if fourcc == "ANMF" {
+			count++
+		}
+		if size < 0 {
+			break
+		}
+		padded := size + (size & 1)
+		next := off + 8 + padded
+		if next <= off || next > len(webp) {
+			break
+		}
+		off = next
+	}
+	return count
+}

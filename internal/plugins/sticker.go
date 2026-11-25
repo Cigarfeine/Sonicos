@@ -61,6 +61,20 @@ func makeAudioSticker(ctx context.Context, message command.Message, _ []string, 
 		slog.Error("create sound sticker", "error", err)
 		return reply(ctx, command.Reply{Text: "Couldn't convert that media into a sound sticker. It must be audio or a video with an audio track."})
 	}
+	var peak byte
+	for _, v := range converted.Waveform {
+		if v > peak {
+			peak = v
+		}
+	}
+	slog.Debug("sound sticker ready",
+		"webp_bytes", len(converted.Data),
+		"audio_bytes", len(converted.AudioData),
+		"seconds", converted.Seconds,
+		"animated", converted.Animated,
+		"exif_offset", converted.ExifOffset,
+		"waveform_peak", peak,
+	)
 	return reply(ctx, command.Reply{Sticker: &converted})
 }
 

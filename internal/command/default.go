@@ -20,6 +20,10 @@ func Register(cmd Command) {
 	registrationErr = defaultRegistry.Register(cmd)
 }
 
+func Watch(w Watcher) {
+	defaultRegistry.Watch(w)
+}
+
 func Default() (*Registry, error) {
 	registrationMu.Lock()
 	defer registrationMu.Unlock()
