@@ -34,31 +34,66 @@ type ModerationStore interface {
 	ResetStrikes(ctx context.Context, groupJID, userID string) error
 	RememberSticker(ctx context.Context, groupJID, messageID string, info StickerInfo) error
 	LookupSticker(ctx context.Context, groupJID, messageID string) (StickerInfo, bool, error)
+	GetShields(ctx context.Context, groupJID string) (GroupShields, error)
+	SetShield(ctx context.Context, groupJID, field, value string) error
+	IncrementRate(ctx context.Context, groupJID, bucket, userID string, windowSec int) (int, error)
+	SaveStage(ctx context.Context, scopeKey string, media StagedMedia, ttlSec int) error
+	LoadStage(ctx context.Context, scopeKey string) (StagedMedia, bool, error)
+	ClearStage(ctx context.Context, scopeKey string) error
+	SaveReactionSticker(ctx context.Context, ownerID, emoji string, sticker SavedReactionSticker) error
+	GetReactionSticker(ctx context.Context, ownerID, emoji string) (SavedReactionSticker, bool, error)
+	DeleteReactionSticker(ctx context.Context, ownerID, emoji string) (bool, error)
+	ListReactionStickers(ctx context.Context, ownerID string) ([]SavedReactionSticker, error)
+}
+
+type SavedReactionSticker struct {
+	Emoji    string `json:"emoji"`
+	Data     []byte `json:"data"`
+	Animated bool   `json:"animated,omitempty"`
+	SavedAt  int64  `json:"saved_at,omitempty"`
+}
+
+type GroupShields struct {
+	AntiLoud         bool    `json:"anti_loud"`
+	AntiLoudDB       float64 `json:"anti_loud_db"`
+	AntiLink         bool    `json:"anti_link"`
+	AntiSpam         bool    `json:"anti_spam"`
+	AntiStickerFlood bool    `json:"anti_sticker_flood"`
+}
+
+type StagedMedia struct {
+	Kind     MediaKind `json:"kind"`
+	MIMEType string    `json:"mime_type"`
+	Data     []byte    `json:"data"`
+	Animated bool      `json:"animated,omitempty"`
 }
 
 type Message struct {
-	ID              string
-	Chat            string
-	Sender          string
-	FromMe          bool
-	Text            string
-	Group           bool
-	MentionedJIDs   []string
-	QuotedSender    string
-	QuotedMessageID string
-	Sticker         *StickerInfo
-	QuotedSticker   *StickerInfo
-	MediaSource     MediaSource
-	GroupService    GroupService
-	ModerationStore ModerationStore
+	ID                 string
+	Chat               string
+	Sender             string
+	FromMe             bool
+	Text               string
+	Group              bool
+	MentionedJIDs      []string
+	QuotedSender       string
+	QuotedMessageID    string
+	QuotedFromMe       bool
+	Sticker            *StickerInfo
+	QuotedSticker      *StickerInfo
+	MediaSource        MediaSource
+	StickerAudioSource MediaSource
+	GroupService       GroupService
+	ModerationStore    ModerationStore
 }
 
 type MediaKind string
 
 const (
-	MediaImage MediaKind = "image"
-	MediaVideo MediaKind = "video"
-	MediaAudio MediaKind = "audio"
+	MediaImage   MediaKind = "image"
+	MediaVideo   MediaKind = "video"
+	MediaAudio   MediaKind = "audio"
+	MediaSticker MediaKind = "sticker"
 )
 
 type Attachment struct {
@@ -84,10 +119,53 @@ type Sticker struct {
 	Waveform      []byte
 }
 
+type ImageReply struct {
+	Data     []byte
+	MIMEType string
+	Caption  string
+}
+
+type AudioReply struct {
+	Data     []byte
+	MIMEType string
+	Seconds  uint32
+	Waveform []byte
+	PTT      bool
+}
+
+type VideoNoteReply struct {
+	Data    []byte
+	Thumb   []byte
+	Seconds uint32
+	Width   uint32
+	Height  uint32
+}
+
+type VideoReply struct {
+	Data    []byte
+	Thumb   []byte
+	Caption string
+	Seconds uint32
+	Width   uint32
+	Height  uint32
+}
+
+type StickerReaction struct {
+	Sticker           Sticker
+	TargetStanzaID    string
+	TargetParticipant string
+	TargetFromMe      bool
+}
+
 type Reply struct {
-	Text     string
-	Mentions []string
-	Sticker  *Sticker
+	Text            string
+	Mentions        []string
+	Sticker         *Sticker
+	Image           *ImageReply
+	Audio           *AudioReply
+	Video           *VideoReply
+	VideoNote       *VideoNoteReply
+	StickerReaction *StickerReaction
 }
 
 type ParticipantAction string

@@ -18,6 +18,7 @@ type Bot struct {
 	client     *whatsmeow.Client
 	processor  *application.Processor
 	moderation command.ModerationStore
+	audioCache *stickerAudioCache
 	workers    int
 	queue      chan *events.Message
 	logger     *slog.Logger
@@ -38,11 +39,12 @@ func NewBot(store *sqlstore.Container, processor *application.Processor, workers
 	client.InitialAutoReconnect = true
 
 	return &Bot{
-		client:    client,
-		processor: processor,
-		workers:   workers,
-		queue:     make(chan *events.Message, queueSize),
-		logger:    logger,
+		client:     client,
+		processor:  processor,
+		audioCache: newStickerAudioCache(),
+		workers:    workers,
+		queue:      make(chan *events.Message, queueSize),
+		logger:     logger,
 	}, nil
 }
 

@@ -14,7 +14,13 @@ import (
 	"github.com/sonicos/whatsapp-bot/internal/command"
 )
 
-const seenStickerTTL = 24 * time.Hour
+const (
+	seenStickerTTL            = 24 * time.Hour
+	defaultAntiLoudDB         = -6.0
+	maxStagedMediaSize        = 10 << 20
+	maxReactionStickerBytes   = 1 << 20
+	maxReactionLibraryEntries = 100
+)
 
 // RedisStore persists per-group sticker blacklists, user strike counters,
 // and a short-lived message-ID -> sticker-hash cache in Redis.
@@ -251,4 +257,208 @@ func (s *RedisStore) LookupSticker(ctx context.Context, groupJID, messageID stri
 		return command.StickerInfo{}, false, nil
 	}
 	return info, true, nil
+}
+
+func shieldsKey(groupJID string) string { return "sonicos:mod:shields:" + groupJID }
+func rateKey(groupJID, bucket, userID string) string {
+	return "sonicos:mod:rate:" + groupJID + ":" + bucket + ":" + userID
+}
+func stageKey(scopeKey string) string { return "sonicos:mod:stage:" + scopeKey }
+
+func (s *RedisStore) GetShields(ctx context.Context, groupJID string) (command.GroupShields, error) {
+	shields := command.GroupShields{AntiLoudDB: defaultAntiLoudDB}
+	vals, err := s.client.HGetAll(ctx, shieldsKey(groupJID)).Result()
+	if err != nil {
+		return shields, fmt.Errorf("get group shields: %w", err)
+	}
+	shields.AntiLoud = vals["anti_loud"] == "1" || strings.EqualFold(vals["anti_loud"], "true")
+	shields.AntiLink = vals["anti_link"] == "1" || strings.EqualFold(vals["anti_link"], "true")
+	shields.AntiSpam = vals["anti_spam"] == "1" || strings.EqualFold(vals["anti_spam"], "true")
+	shields.AntiStickerFlood = vals["anti_sticker_flood"] == "1" || strings.EqualFold(vals["anti_sticker_flood"], "true")
+	if rawDB := strings.TrimSpace(vals["anti_loud_db"]); rawDB != "" {
+		if parsed, err := strconv.ParseFloat(rawDB, 64); err == nil {
+			shields.AntiLoudDB = parsed
+		}
+	}
+	return shields, nil
+}
+
+func (s *RedisStore) SetShield(ctx context.Context, groupJID, field, value string) error {
+	if err := s.client.HSet(ctx, shieldsKey(groupJID), field, value).Err(); err != nil {
+		return fmt.Errorf("set group shield %q: %w", field, err)
+	}
+	return nil
+}
+
+func (s *RedisStore) IncrementRate(ctx context.Context, groupJID, bucket, userID string, windowSec int) (int, error) {
+	if windowSec <= 0 {
+		windowSec = 10
+	}
+	key := rateKey(groupJID, bucket, userID)
+	count, err := s.client.Incr(ctx, key).Result()
+	if err != nil {
+		return 0, fmt.Errorf("increment rate bucket %q: %w", bucket, err)
+	}
+	if count == 1 {
+		if err := s.client.Expire(ctx, key, time.Duration(windowSec)*time.Second).Err(); err != nil {
+			return int(count), fmt.Errorf("expire rate bucket %q: %w", bucket, err)
+		}
+	}
+	return int(count), nil
+}
+
+func (s *RedisStore) SaveStage(ctx context.Context, scopeKey string, media command.StagedMedia, ttlSec int) error {
+	if len(media.Data) > maxStagedMediaSize {
+		return fmt.Errorf("staged media exceeds %d MiB limit", maxStagedMediaSize>>20)
+	}
+	if ttlSec <= 0 {
+		ttlSec = 600
+	}
+	raw, err := json.Marshal(media)
+	if err != nil {
+		return fmt.Errorf("marshal staged media: %w", err)
+	}
+	if err := s.client.Set(ctx, stageKey(scopeKey), raw, time.Duration(ttlSec)*time.Second).Err(); err != nil {
+		return fmt.Errorf("save staged media: %w", err)
+	}
+	return nil
+}
+
+func (s *RedisStore) LoadStage(ctx context.Context, scopeKey string) (command.StagedMedia, bool, error) {
+	raw, err := s.client.Get(ctx, stageKey(scopeKey)).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return command.StagedMedia{}, false, nil
+	}
+	if err != nil {
+		return command.StagedMedia{}, false, fmt.Errorf("load staged media: %w", err)
+	}
+	var media command.StagedMedia
+	if err := json.Unmarshal(raw, &media); err != nil {
+		return command.StagedMedia{}, false, nil
+	}
+	return media, true, nil
+}
+
+func (s *RedisStore) ClearStage(ctx context.Context, scopeKey string) error {
+	if err := s.client.Del(ctx, stageKey(scopeKey)).Err(); err != nil {
+		return fmt.Errorf("clear staged media: %w", err)
+	}
+	return nil
+}
+
+func reactionLibraryKey(ownerID string) string {
+	return "sonicos:sreact:lib:" + strings.TrimSpace(ownerID)
+}
+
+func normReactionEmojiKey(raw string) string {
+	cleaned := strings.TrimSpace(raw)
+	cleaned = strings.ReplaceAll(cleaned, "\uFE0F", "")
+	cleaned = strings.ReplaceAll(cleaned, "\uFE0E", "")
+	return strings.ToLower(cleaned)
+}
+
+func (s *RedisStore) SaveReactionSticker(ctx context.Context, ownerID, emoji string, sticker command.SavedReactionSticker) error {
+	ownerID = strings.TrimSpace(ownerID)
+	key := normReactionEmojiKey(emoji)
+	if ownerID == "" || key == "" {
+		return errors.New("owner and emoji key are required")
+	}
+	if len(sticker.Data) == 0 {
+		return errors.New("reaction sticker data is empty")
+	}
+	if len(sticker.Data) > maxReactionStickerBytes {
+		return fmt.Errorf("reaction sticker exceeds %d KiB limit", maxReactionStickerBytes>>10)
+	}
+	if strings.TrimSpace(sticker.Emoji) == "" {
+		sticker.Emoji = strings.TrimSpace(emoji)
+	}
+	if sticker.SavedAt == 0 {
+		sticker.SavedAt = time.Now().Unix()
+	}
+
+	libKey := reactionLibraryKey(ownerID)
+	exists, err := s.client.HExists(ctx, libKey, key).Result()
+	if err != nil {
+		return fmt.Errorf("check reaction sticker library: %w", err)
+	}
+	if !exists {
+		count, err := s.client.HLen(ctx, libKey).Result()
+		if err != nil {
+			return fmt.Errorf("count reaction sticker library: %w", err)
+		}
+		if count >= maxReactionLibraryEntries {
+			return fmt.Errorf("reaction sticker library limit reached (%d max)", maxReactionLibraryEntries)
+		}
+	}
+
+	payload, err := json.Marshal(sticker)
+	if err != nil {
+		return fmt.Errorf("marshal reaction sticker: %w", err)
+	}
+	if err := s.client.HSet(ctx, libKey, key, payload).Err(); err != nil {
+		return fmt.Errorf("save reaction sticker: %w", err)
+	}
+	return nil
+}
+
+func (s *RedisStore) GetReactionSticker(ctx context.Context, ownerID, emoji string) (command.SavedReactionSticker, bool, error) {
+	ownerID = strings.TrimSpace(ownerID)
+	key := normReactionEmojiKey(emoji)
+	if ownerID == "" || key == "" {
+		return command.SavedReactionSticker{}, false, nil
+	}
+	raw, err := s.client.HGet(ctx, reactionLibraryKey(ownerID), key).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return command.SavedReactionSticker{}, false, nil
+	}
+	if err != nil {
+		return command.SavedReactionSticker{}, false, fmt.Errorf("get reaction sticker: %w", err)
+	}
+	var st command.SavedReactionSticker
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return command.SavedReactionSticker{}, false, nil
+	}
+	return st, true, nil
+}
+
+func (s *RedisStore) DeleteReactionSticker(ctx context.Context, ownerID, emoji string) (bool, error) {
+	ownerID = strings.TrimSpace(ownerID)
+	key := normReactionEmojiKey(emoji)
+	if ownerID == "" || key == "" {
+		return false, nil
+	}
+	n, err := s.client.HDel(ctx, reactionLibraryKey(ownerID), key).Result()
+	if err != nil {
+		return false, fmt.Errorf("delete reaction sticker: %w", err)
+	}
+	return n > 0, nil
+}
+
+func (s *RedisStore) ListReactionStickers(ctx context.Context, ownerID string) ([]command.SavedReactionSticker, error) {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return nil, nil
+	}
+	vals, err := s.client.HGetAll(ctx, reactionLibraryKey(ownerID)).Result()
+	if err != nil {
+		return nil, fmt.Errorf("list reaction stickers: %w", err)
+	}
+	out := make([]command.SavedReactionSticker, 0, len(vals))
+	for key, raw := range vals {
+		var st command.SavedReactionSticker
+		if err := json.Unmarshal([]byte(raw), &st); err != nil {
+			continue
+		}
+		if strings.TrimSpace(st.Emoji) == "" {
+			st.Emoji = key
+		}
+		out = append(out, st)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SavedAt != out[j].SavedAt {
+			return out[i].SavedAt < out[j].SavedAt
+		}
+		return out[i].Emoji < out[j].Emoji
+	})
+	return out, nil
 }

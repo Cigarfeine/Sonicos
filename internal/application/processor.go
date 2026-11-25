@@ -49,7 +49,7 @@ func (p *Processor) Handle(parent context.Context, message command.Message, repl
 	text := strings.TrimSpace(message.Text)
 	isCommand := text != "" && strings.HasPrefix(text, p.prefix)
 	watchers := p.registry.Watchers()
-	shouldWatch := !isCommand && message.Sticker != nil && len(watchers) > 0
+	shouldWatch := !isCommand && message.Group && !message.FromMe && len(watchers) > 0
 	if !isCommand && !shouldWatch {
 		return nil
 	}

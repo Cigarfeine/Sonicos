@@ -16,7 +16,9 @@ import (
 	"github.com/sonicos/whatsapp-bot/internal/command"
 	stickerpkg "github.com/sonicos/whatsapp-bot/internal/sticker"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
 )
@@ -347,4 +349,222 @@ func quotedContextLite(evt *events.Message) *waE2E.ContextInfo {
 			Conversation: proto.String(preview),
 		},
 	}
+}
+
+func (b *Bot) encodeImageReply(ctx context.Context, img command.ImageReply, source *events.Message) (*waE2E.Message, error) {
+	upload, err := b.client.Upload(ctx, img.Data, whatsmeow.MediaImage)
+	if err != nil {
+		return nil, fmt.Errorf("upload image reply: %w", err)
+	}
+	mime := strings.TrimSpace(img.MIMEType)
+	if mime == "" {
+		mime = "image/png"
+	}
+	var contextInfo *waE2E.ContextInfo
+	if source != nil {
+		contextInfo = quotedContext(source)
+	}
+	msg := &waE2E.ImageMessage{
+		URL:               proto.String(upload.URL),
+		Mimetype:          proto.String(mime),
+		FileSHA256:        upload.FileSHA256,
+		FileLength:        proto.Uint64(upload.FileLength),
+		MediaKey:          upload.MediaKey,
+		FileEncSHA256:     upload.FileEncSHA256,
+		DirectPath:        proto.String(upload.DirectPath),
+		MediaKeyTimestamp: proto.Int64(time.Now().Unix()),
+		ContextInfo:       contextInfo,
+	}
+	if strings.TrimSpace(img.Caption) != "" {
+		msg.Caption = proto.String(img.Caption)
+	}
+	return &waE2E.Message{ImageMessage: msg}, nil
+}
+
+func (b *Bot) encodeAudioReply(ctx context.Context, audio command.AudioReply, source *events.Message) (*waE2E.Message, error) {
+	upload, err := b.client.Upload(ctx, audio.Data, whatsmeow.MediaAudio)
+	if err != nil {
+		return nil, fmt.Errorf("upload audio reply: %w", err)
+	}
+	var contextInfo *waE2E.ContextInfo
+	if source != nil {
+		contextInfo = quotedContext(source)
+	}
+	mime := strings.TrimSpace(audio.MIMEType)
+	if mime == "" {
+		mime = "audio/ogg; codecs=opus"
+	}
+	sec := audio.Seconds
+	if sec < 1 {
+		sec = 1
+	}
+	msg := &waE2E.AudioMessage{
+		URL:               proto.String(upload.URL),
+		Mimetype:          proto.String(mime),
+		FileSHA256:        upload.FileSHA256,
+		FileLength:        proto.Uint64(upload.FileLength),
+		Seconds:           proto.Uint32(sec),
+		MediaKey:          upload.MediaKey,
+		FileEncSHA256:     upload.FileEncSHA256,
+		DirectPath:        proto.String(upload.DirectPath),
+		MediaKeyTimestamp: proto.Int64(time.Now().Unix()),
+		PTT:               proto.Bool(audio.PTT),
+		ContextInfo:       contextInfo,
+	}
+	if wave := normalizeWaveform(audio.Waveform); len(wave) > 0 {
+		msg.Waveform = wave
+	}
+	return &waE2E.Message{AudioMessage: msg}, nil
+}
+
+func (b *Bot) encodeVideoReply(ctx context.Context, video command.VideoReply, source *events.Message) (*waE2E.Message, error) {
+	upload, err := b.client.Upload(ctx, video.Data, whatsmeow.MediaVideo)
+	if err != nil {
+		return nil, fmt.Errorf("upload video reply: %w", err)
+	}
+	return buildVideoMessage(video, upload, source), nil
+}
+
+func buildVideoMessage(video command.VideoReply, upload whatsmeow.UploadResponse, source *events.Message) *waE2E.Message {
+	var contextInfo *waE2E.ContextInfo
+	if source != nil {
+		contextInfo = quotedContext(source)
+	}
+	sec := video.Seconds
+	if sec < 1 {
+		sec = 1
+	}
+	w := video.Width
+	if w == 0 {
+		w = 512
+	}
+	h := video.Height
+	if h == 0 {
+		h = 512
+	}
+	videoMsg := &waE2E.VideoMessage{
+		URL:               proto.String(upload.URL),
+		DirectPath:        proto.String(upload.DirectPath),
+		MediaKey:          upload.MediaKey,
+		FileEncSHA256:     upload.FileEncSHA256,
+		FileSHA256:        upload.FileSHA256,
+		FileLength:        proto.Uint64(upload.FileLength),
+		Mimetype:          proto.String("video/mp4"),
+		Seconds:           proto.Uint32(sec),
+		Width:             proto.Uint32(w),
+		Height:            proto.Uint32(h),
+		MediaKeyTimestamp: proto.Int64(time.Now().Unix()),
+		ContextInfo:       contextInfo,
+	}
+	if len(video.Thumb) > 0 {
+		videoMsg.JPEGThumbnail = video.Thumb
+	}
+	if strings.TrimSpace(video.Caption) != "" {
+		videoMsg.Caption = proto.String(video.Caption)
+	}
+	return &waE2E.Message{VideoMessage: videoMsg}
+}
+
+func (b *Bot) encodeVideoNoteReply(ctx context.Context, note command.VideoNoteReply, source *events.Message) (*waE2E.Message, error) {
+	upload, err := b.client.Upload(ctx, note.Data, whatsmeow.MediaVideo)
+	if err != nil {
+		return nil, fmt.Errorf("upload video note: %w", err)
+	}
+	return buildVideoNoteMessage(note, upload, source), nil
+}
+
+func buildVideoNoteMessage(note command.VideoNoteReply, upload whatsmeow.UploadResponse, source *events.Message) *waE2E.Message {
+	var contextInfo *waE2E.ContextInfo
+	if source != nil {
+		contextInfo = quotedContext(source)
+	}
+	sec := note.Seconds
+	if sec < 1 {
+		sec = 1
+	} else if sec > 60 {
+		sec = 60
+	}
+	w := note.Width
+	if w == 0 {
+		w = 384
+	}
+	h := note.Height
+	if h == 0 {
+		h = 384
+	}
+	videoMsg := &waE2E.VideoMessage{
+		URL:               proto.String(upload.URL),
+		DirectPath:        proto.String(upload.DirectPath),
+		MediaKey:          upload.MediaKey,
+		FileEncSHA256:     upload.FileEncSHA256,
+		FileSHA256:        upload.FileSHA256,
+		FileLength:        proto.Uint64(upload.FileLength),
+		Mimetype:          proto.String("video/mp4"),
+		Seconds:           proto.Uint32(sec),
+		Width:             proto.Uint32(w),
+		Height:            proto.Uint32(h),
+		MediaKeyTimestamp: proto.Int64(time.Now().Unix()),
+		ContextInfo:       contextInfo,
+	}
+	if len(note.Thumb) > 0 {
+		videoMsg.JPEGThumbnail = note.Thumb
+	}
+	return &waE2E.Message{PtvMessage: videoMsg}
+}
+
+func (b *Bot) encodeStickerReaction(ctx context.Context, react command.StickerReaction, chatJID types.JID) (*waE2E.Message, error) {
+	upload, err := b.client.Upload(ctx, react.Sticker.Data, whatsmeow.MediaImage)
+	if err != nil {
+		return nil, fmt.Errorf("upload sticker reaction: %w", err)
+	}
+	exifOffset := react.Sticker.ExifOffset
+	if exifOffset == 0 {
+		exifOffset = stickerpkg.FindWebpExifOffset(react.Sticker.Data)
+	}
+	var firstFrameSidecar []byte
+	if react.Sticker.Animated && exifOffset > 0 {
+		firstFrameSidecar, err = computeFirstFrameSidecar(react.Sticker.Data, upload.MediaKey, exifOffset, upload.FileEncSHA256)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return buildStickerReactionMessage(react, upload, exifOffset, firstFrameSidecar, chatJID)
+}
+
+func buildStickerReactionMessage(
+	react command.StickerReaction,
+	upload whatsmeow.UploadResponse,
+	exifOffset uint32,
+	firstFrameSidecar []byte,
+	chatJID types.JID,
+) (*waE2E.Message, error) {
+	st := buildSilentStickerMessage(react.Sticker, upload, exifOffset, firstFrameSidecar, nil).GetStickerMessage()
+	parentKey := &waCommon.MessageKey{
+		RemoteJID: proto.String(chatJID.ToNonAD().String()),
+		FromMe:    proto.Bool(react.TargetFromMe),
+		ID:        proto.String(strings.TrimSpace(react.TargetStanzaID)),
+	}
+	if chatJID.Server == types.GroupServer && !react.TargetFromMe {
+		if p := strings.TrimSpace(react.TargetParticipant); p != "" {
+			if parsed, err := types.ParseJID(p); err == nil && !parsed.IsEmpty() {
+				parentKey.Participant = proto.String(parsed.ToNonAD().String())
+			} else {
+				parentKey.Participant = proto.String(p)
+			}
+		}
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, fmt.Errorf("generate messageSecret: %w", err)
+	}
+	return &waE2E.Message{
+		StickerMessage: st,
+		MessageContextInfo: &waE2E.MessageContextInfo{
+			MessageSecret: secret,
+			MessageAssociation: &waE2E.MessageAssociation{
+				AssociationType:  waE2E.MessageAssociation_STICKER_ANNOTATION.Enum(),
+				ParentMessageKey: parentKey,
+			},
+		},
+	}, nil
 }
