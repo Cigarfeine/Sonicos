@@ -23,13 +23,15 @@ func init() {
 var categoryOrder = map[string]int{
 	"General":          1,
 	"Media & Stickers": 2,
-	"Group Management": 3,
+	"Group (Members)":  3,
+	"Group (Admins)":   4,
 }
 
 var categoryIcons = map[string]string{
 	"General":          "⚡",
 	"Media & Stickers": "🎨",
-	"Group Management": "🛡️",
+	"Group (Members)":  "👥",
+	"Group (Admins)":   "🛡️",
 }
 
 func help(ctx context.Context, _ command.Message, _ []string, reply command.ReplyFunc) error {
