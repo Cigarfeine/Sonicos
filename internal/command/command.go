@@ -40,11 +40,16 @@ type MediaSource interface {
 }
 
 type Sticker struct {
-	Data     []byte
-	MIMEType string
-	Animated bool
-	Audio    bool
-	Seconds  uint32
+	Data          []byte
+	MIMEType      string
+	Animated      bool
+	ExifOffset    uint32
+	Emojis        []string
+	Audio         bool
+	AudioData     []byte
+	AudioMIMEType string
+	Seconds       uint32
+	Waveform      []byte
 }
 
 type Reply struct {

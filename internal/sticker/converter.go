@@ -3,12 +3,15 @@ package sticker
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -16,16 +19,32 @@ import (
 )
 
 const (
-	MaxInputBytes     = 20 << 20
-	MaxStaticBytes    = 100 << 10
-	MaxAnimatedBytes  = 500 << 10
-	MaxAudioBytes     = 1 << 20
-	MaxStickerSeconds = 6
-	MaxAudioSeconds   = 10
+	MaxInputBytes          = 20 << 20
+	MaxStaticBytes         = 100 << 10
+	MaxAnimatedBytes       = 500 << 10
+	MaxAudioBytes          = 4 << 20
+	MaxStickerSeconds      = 10
+	MaxSoundStickerSeconds = 25
+	MaxAudioSeconds        = 25
+
+	targetStaticBytes   = 98 << 10
+	targetAnimatedBytes = 490 << 10
 )
+
+var alphaPixFmtRe = regexp.MustCompile(`(?i)(yuva|rgba|bgra|argb|abgr|pal8|ya)`)
 
 type Converter struct {
 	ffmpeg string
+}
+
+type mediaProbe struct {
+	hasVideo       bool
+	hasAttachedPic bool
+	hasAudio       bool
+	width          int
+	height         int
+	pixFmt         string
+	durationSec    float64
 }
 
 func NewConverter(ffmpeg string) *Converter {
@@ -35,12 +54,10 @@ func NewConverter(ffmpeg string) *Converter {
 	return &Converter{ffmpeg: ffmpeg}
 }
 
+// ToWebP converts an image or video attachment into a 512x512 WebP sticker with EXIF pack metadata.
 func (c *Converter) ToWebP(ctx context.Context, attachment command.Attachment) (command.Sticker, error) {
-	if len(attachment.Data) == 0 {
-		return command.Sticker{}, errors.New("media attachment is empty")
-	}
-	if len(attachment.Data) > MaxInputBytes {
-		return command.Sticker{}, fmt.Errorf("input exceeds %d MiB", MaxInputBytes>>20)
+	if err := validateAttachment(attachment); err != nil {
+		return command.Sticker{}, err
 	}
 	if attachment.Kind != command.MediaImage && attachment.Kind != command.MediaVideo {
 		return command.Sticker{}, errors.New("sticker command requires an image or video")
@@ -52,49 +69,33 @@ func (c *Converter) ToWebP(ctx context.Context, attachment command.Attachment) (
 	}
 	defer cleanup()
 
+	info, _ := c.probeMedia(ctx, inputPath)
 	animated := attachment.Kind == command.MediaVideo || strings.HasPrefix(strings.ToLower(attachment.MIMEType), "image/gif")
-	limit := MaxStaticBytes
-	if animated {
-		limit = MaxAnimatedBytes
+	meta := ExifMetadata{
+		PackID:    newPackID("com.sonicos.pack."),
+		PackName:  "Sonicos Stickers",
+		Publisher: "Sonicos",
+		Emojis:    []string{"✨"},
 	}
-	attempts := []struct {
-		quality int
-		fps     int
-		size    int
-	}{
-		{72, 15, 512},
-		{58, 12, 512},
-		{45, 10, 448},
-		{34, 8, 384},
+
+	webpData, exifOffset, err := c.encodeWebPWithLadder(ctx, inputPath, info, animated, MaxStickerSeconds, meta)
+	if err != nil {
+		return command.Sticker{}, err
 	}
-	for _, attempt := range attempts {
-		outputPath, removeOutput, err := tempPath(".webp")
-		if err != nil {
-			return command.Sticker{}, err
-		}
-		err = c.encodeWebP(ctx, inputPath, outputPath, animated, attempt.quality, attempt.fps, attempt.size)
-		if err != nil {
-			removeOutput()
-			return command.Sticker{}, err
-		}
-		data, err := os.ReadFile(outputPath)
-		removeOutput()
-		if err != nil {
-			return command.Sticker{}, fmt.Errorf("read converted WebP: %w", err)
-		}
-		if len(data) <= limit {
-			return command.Sticker{Data: data, MIMEType: "image/webp", Animated: animated}, nil
-		}
-	}
-	return command.Sticker{}, fmt.Errorf("converted sticker exceeds WhatsApp's %d KiB size limit", limit>>10)
+	return command.Sticker{
+		Data:       webpData,
+		MIMEType:   "image/webp",
+		Animated:   animated,
+		ExifOffset: exifOffset,
+		Emojis:     meta.Emojis,
+	}, nil
 }
 
-func (c *Converter) ToOpus(ctx context.Context, attachment command.Attachment) (command.Sticker, error) {
-	if len(attachment.Data) == 0 {
-		return command.Sticker{}, errors.New("media attachment is empty")
-	}
-	if len(attachment.Data) > MaxInputBytes {
-		return command.Sticker{}, fmt.Errorf("input exceeds %d MiB", MaxInputBytes>>20)
+// ToSoundSticker converts an audio or video attachment into a WhatsApp Sound Sticker
+// carrying both a 512x512 WebP (with EXIF) and a stereo Ogg/Opus track + 64-byte RMS waveform.
+func (c *Converter) ToSoundSticker(ctx context.Context, attachment command.Attachment) (command.Sticker, error) {
+	if err := validateAttachment(attachment); err != nil {
+		return command.Sticker{}, err
 	}
 	if attachment.Kind != command.MediaAudio && attachment.Kind != command.MediaVideo {
 		return command.Sticker{}, errors.New("audio sticker command requires audio or video with an audio track")
@@ -106,46 +107,376 @@ func (c *Converter) ToOpus(ctx context.Context, attachment command.Attachment) (
 	}
 	defer cleanup()
 
-	outputPath, removeOutput, err := tempPath(".ogg")
+	info, err := c.probeMedia(ctx, inputPath)
 	if err != nil {
 		return command.Sticker{}, err
+	}
+	if !info.hasAudio {
+		return command.Sticker{}, errors.New("input media has no audio stream")
+	}
+
+	audioData, seconds, waveform, err := c.encodeOpusWithWaveform(ctx, inputPath, MaxSoundStickerSeconds)
+	if err != nil {
+		return command.Sticker{}, err
+	}
+
+	meta := ExifMetadata{
+		PackID:    newPackID("com.sonicos.sound."),
+		PackName:  "Sonicos Sound",
+		Publisher: "Sonicos",
+		Emojis:    []string{"🔊"},
+	}
+
+	var webpData []byte
+	var exifOffset uint32
+	animated := false
+
+	switch {
+	case attachment.Kind == command.MediaVideo && info.hasVideo:
+		animated = true
+		clipMax := min(int(seconds), MaxSoundStickerSeconds)
+		if clipMax < 1 {
+			clipMax = MaxSoundStickerSeconds
+		}
+		webpData, exifOffset, err = c.encodeWebPWithLadder(ctx, inputPath, info, true, clipMax, meta)
+	case info.hasAttachedPic:
+		webpData, exifOffset, err = c.encodeWebPWithLadder(ctx, inputPath, info, false, MaxSoundStickerSeconds, meta)
+	default:
+		coverPNG, coverErr := renderAudioCoverPNG(waveform)
+		if coverErr != nil {
+			return command.Sticker{}, fmt.Errorf("render audio sticker cover: %w", coverErr)
+		}
+		coverPath, coverCleanup, writeErr := writeInput(coverPNG, ".png")
+		if writeErr != nil {
+			return command.Sticker{}, writeErr
+		}
+		coverInfo := mediaProbe{hasVideo: true, width: 512, height: 512, pixFmt: "rgba"}
+		webpData, exifOffset, err = c.encodeWebPWithLadder(ctx, coverPath, coverInfo, false, MaxSoundStickerSeconds, meta)
+		coverCleanup()
+	}
+	if err != nil {
+		return command.Sticker{}, err
+	}
+
+	return command.Sticker{
+		Data:          webpData,
+		MIMEType:      "image/webp",
+		Animated:      animated,
+		ExifOffset:    exifOffset,
+		Emojis:        meta.Emojis,
+		Audio:         true,
+		AudioData:     audioData,
+		AudioMIMEType: "audio/ogg; codecs=opus",
+		Seconds:       seconds,
+		Waveform:      waveform,
+	}, nil
+}
+
+// ToOpus transcodes an audio or video attachment into stereo Ogg/Opus with a 64-byte RMS waveform.
+func (c *Converter) ToOpus(ctx context.Context, attachment command.Attachment) (command.Sticker, error) {
+	if err := validateAttachment(attachment); err != nil {
+		return command.Sticker{}, err
+	}
+	if attachment.Kind != command.MediaAudio && attachment.Kind != command.MediaVideo {
+		return command.Sticker{}, errors.New("audio sticker command requires audio or video with an audio track")
+	}
+
+	inputPath, cleanup, err := writeInput(attachment.Data, suffixFor(attachment.MIMEType, attachment.Kind))
+	if err != nil {
+		return command.Sticker{}, err
+	}
+	defer cleanup()
+
+	data, seconds, waveform, err := c.encodeOpusWithWaveform(ctx, inputPath, MaxAudioSeconds)
+	if err != nil {
+		return command.Sticker{}, err
+	}
+	return command.Sticker{
+		Data:          data,
+		MIMEType:      "audio/ogg; codecs=opus",
+		Audio:         true,
+		AudioMIMEType: "audio/ogg; codecs=opus",
+		Seconds:       seconds,
+		Waveform:      waveform,
+	}, nil
+}
+
+func validateAttachment(attachment command.Attachment) error {
+	if len(attachment.Data) == 0 {
+		return errors.New("media attachment is empty")
+	}
+	if len(attachment.Data) > MaxInputBytes {
+		return fmt.Errorf("input exceeds %d MiB", MaxInputBytes>>20)
+	}
+	return nil
+}
+
+func (c *Converter) encodeOpusWithWaveform(ctx context.Context, inputPath string, maxSeconds int) ([]byte, uint32, []byte, error) {
+	outputPath, removeOutput, err := tempPath(".ogg")
+	if err != nil {
+		return nil, 0, nil, err
 	}
 	defer removeOutput()
 
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-nostdin", "-y",
 		"-i", inputPath,
-		"-map", "0:a:0", "-vn", "-t", fmt.Sprint(MaxAudioSeconds),
-		"-ac", "1", "-ar", "48000", "-c:a", "libopus", "-b:a", "48k",
-		"-application", "audio", "-vbr", "on", "-f", "ogg", outputPath,
+		"-map", "0:a:0", "-map_metadata", "-1", "-map_chapters", "-1", "-vn",
+		"-t", fmt.Sprint(maxSeconds),
+		"-ac", "2", "-ar", "48000", "-c:a", "libopus", "-b:a", "48k",
+		"-vbr", "on", "-compression_level", "10", "-frame_duration", "20",
+		"-application", "audio", "-f", "ogg", outputPath,
 	}
 	if err := c.run(ctx, args...); err != nil {
-		return command.Sticker{}, fmt.Errorf("convert audio to Opus: %w", err)
+		return nil, 0, nil, fmt.Errorf("convert audio to Opus: %w", err)
 	}
 	data, err := os.ReadFile(outputPath)
 	if err != nil {
-		return command.Sticker{}, fmt.Errorf("read converted Opus audio: %w", err)
+		return nil, 0, nil, fmt.Errorf("read converted Opus audio: %w", err)
 	}
 	if len(data) > MaxAudioBytes {
-		return command.Sticker{}, fmt.Errorf("converted Opus audio exceeds %d KiB", MaxAudioBytes>>10)
+		return nil, 0, nil, fmt.Errorf("converted Opus audio exceeds %d KiB", MaxAudioBytes>>10)
 	}
-	seconds, err := c.duration(ctx, outputPath)
+	seconds, err := c.duration(ctx, outputPath, maxSeconds)
 	if err != nil {
-		return command.Sticker{}, fmt.Errorf("read Opus duration: %w", err)
+		return nil, 0, nil, fmt.Errorf("read Opus duration: %w", err)
 	}
-	return command.Sticker{Data: data, MIMEType: "audio/ogg; codecs=opus", Audio: true, Seconds: seconds}, nil
+	waveform, err := c.computeWaveform(ctx, outputPath)
+	if err != nil {
+		// Non-fatal fallback to flat waveform so audio still plays cleanly
+		waveform = make([]byte, 64)
+		for i := range waveform {
+			waveform[i] = 52
+		}
+	}
+	return data, seconds, waveform, nil
 }
 
-func (c *Converter) encodeWebP(ctx context.Context, inputPath, outputPath string, animated bool, quality, fps, size int) error {
-	filter := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,format=rgba,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=0x00000000", size, size, size, size)
-	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", inputPath}
-	if animated {
-		args = append(args, "-t", fmt.Sprint(MaxStickerSeconds), "-an", "-vf", fmt.Sprintf("fps=%d,%s", fps, filter), "-loop", "0", "-c:v", "libwebp_anim")
-	} else {
-		args = append(args, "-frames:v", "1", "-an", "-vf", filter, "-c:v", "libwebp")
+func (c *Converter) encodeWebPWithLadder(
+	ctx context.Context,
+	inputPath string,
+	info mediaProbe,
+	animated bool,
+	maxSeconds int,
+	meta ExifMetadata,
+) ([]byte, uint32, error) {
+	opaqueSquare := info.width > 0 && info.width == info.height && !alphaPixFmtRe.MatchString(info.pixFmt)
+	scaleFilter := "scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,setsar=1,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=yuva420p"
+	if opaqueSquare {
+		scaleFilter = "scale=512:512:flags=lanczos,setsar=1,format=yuv420p"
 	}
-	args = append(args, "-quality", fmt.Sprint(quality), "-compression_level", "6", outputPath)
+
+	type attempt struct {
+		quality int
+		fps     int
+	}
+	var attempts []attempt
+	targetLimit := targetStaticBytes
+	hardLimit := MaxStaticBytes
+	if !animated {
+		attempts = []attempt{{85, 0}, {75, 0}, {65, 0}, {50, 0}, {35, 0}}
+	} else {
+		targetLimit = targetAnimatedBytes
+		hardLimit = MaxAnimatedBytes
+		if info.durationSec > 6 {
+			attempts = []attempt{{52, 12}, {40, 10}, {28, 8}, {20, 6}}
+		} else {
+			attempts = []attempt{{60, 15}, {48, 12}, {36, 10}, {26, 8}, {20, 6}}
+		}
+	}
+
+	var best []byte
+	var bestOffset uint32
+	for _, att := range attempts {
+		outputPath, removeOutput, err := tempPath(".webp")
+		if err != nil {
+			return nil, 0, err
+		}
+		err = c.encodeWebP(ctx, inputPath, outputPath, scaleFilter, animated, maxSeconds, att.quality, att.fps)
+		if err != nil {
+			removeOutput()
+			return nil, 0, err
+		}
+		raw, readErr := os.ReadFile(outputPath)
+		removeOutput()
+		if readErr != nil {
+			return nil, 0, fmt.Errorf("read converted WebP: %w", readErr)
+		}
+		withExif, exifOffset, exifErr := InjectWebpExif(raw, meta, 512, 512)
+		if exifErr != nil {
+			return nil, 0, exifErr
+		}
+		if best == nil || len(withExif) < len(best) {
+			best = withExif
+			bestOffset = exifOffset
+		}
+		if len(withExif) <= targetLimit {
+			return withExif, exifOffset, nil
+		}
+	}
+
+	if len(best) > 0 && len(best) <= hardLimit {
+		return best, bestOffset, nil
+	}
+	return nil, 0, fmt.Errorf("converted sticker exceeds WhatsApp's %d KiB size limit", hardLimit>>10)
+}
+
+func (c *Converter) encodeWebP(
+	ctx context.Context,
+	inputPath, outputPath, scaleFilter string,
+	animated bool,
+	maxSeconds, quality, fps int,
+) error {
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", inputPath, "-map", "0:v:0"}
+	if animated {
+		args = append(args,
+			"-t", fmt.Sprint(maxSeconds),
+			"-an",
+			"-vf", fmt.Sprintf("fps=%d,%s", fps, scaleFilter),
+			"-vcodec", "libwebp_anim",
+			"-lossless", "0",
+			"-q:v", fmt.Sprint(quality),
+			"-compression_level", "4",
+			"-loop", "0",
+			"-preset", "default",
+		)
+	} else {
+		args = append(args,
+			"-frames:v", "1",
+			"-an",
+			"-vf", scaleFilter,
+			"-vcodec", "libwebp",
+			"-lossless", "0",
+			"-q:v", fmt.Sprint(quality),
+			"-compression_level", "6",
+		)
+	}
+	args = append(args, outputPath)
 	return c.run(ctx, args...)
+}
+
+func (c *Converter) computeWaveform(ctx context.Context, oggPath string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, c.ffmpeg, "-v", "error", "-nostdin", "-i", oggPath, "-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	pcm, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return nil, fmt.Errorf("%w: %s", err, msg)
+		}
+		return nil, err
+	}
+
+	out := make([]byte, 64)
+	totalSamples := len(pcm) / 2
+	if totalSamples < 64 {
+		for i := range out {
+			out[i] = 18
+		}
+		return out, nil
+	}
+
+	blockSize := totalSamples / 64
+	peaks := make([]float64, 64)
+	var maxVal float64
+	for b := range 64 {
+		start := b * blockSize
+		end := start + blockSize
+		if b == 63 {
+			end = totalSamples
+		}
+		var sumSq float64
+		for s := start; s < end; s++ {
+			sample := float64(int16(binary.LittleEndian.Uint16(pcm[s*2:s*2+2]))) / 32768.0
+			sumSq += sample * sample
+		}
+		rms := math.Sqrt(sumSq / float64(max(1, end-start)))
+		peaks[b] = rms
+		if rms > maxVal {
+			maxVal = rms
+		}
+	}
+
+	scale := 1.0
+	if maxVal > 1e-4 {
+		scale = 1.0 / maxVal
+	}
+	for i := range 64 {
+		scaled := math.Pow(peaks[i]*scale, 0.72) * 100.0
+		v := math.Round(scaled)
+		if v < 0 {
+			v = 0
+		} else if v > 100 {
+			v = 100
+		}
+		out[i] = byte(v)
+	}
+	return out, nil
+}
+
+func (c *Converter) probeMedia(ctx context.Context, path string) (mediaProbe, error) {
+	cmd := exec.CommandContext(ctx, c.ffprobePath(), "-v", "error", "-show_format", "-show_streams", "-of", "json", path)
+	output, err := cmd.Output()
+	if err != nil {
+		return mediaProbe{}, fmt.Errorf("run ffprobe: %w", err)
+	}
+	var parsed struct {
+		Format struct {
+			Duration string `json:"duration"`
+		} `json:"format"`
+		Streams []struct {
+			CodecType   string `json:"codec_type"`
+			Width       int    `json:"width"`
+			Height      int    `json:"height"`
+			PixFmt      string `json:"pix_fmt"`
+			Duration    string `json:"duration"`
+			Disposition struct {
+				AttachedPic int `json:"attached_pic"`
+			} `json:"disposition"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(output, &parsed); err != nil {
+		return mediaProbe{}, fmt.Errorf("parse ffprobe output: %w", err)
+	}
+
+	var res mediaProbe
+	if d, err := strconv.ParseFloat(strings.TrimSpace(parsed.Format.Duration), 64); err == nil && d > 0 {
+		res.durationSec = d
+	}
+	for _, s := range parsed.Streams {
+		switch s.CodecType {
+		case "video":
+			if s.Disposition.AttachedPic != 0 {
+				res.hasAttachedPic = true
+				if res.width == 0 {
+					res.width = s.Width
+					res.height = s.Height
+					res.pixFmt = s.PixFmt
+				}
+				continue
+			}
+			if !res.hasVideo {
+				res.hasVideo = true
+				res.width = s.Width
+				res.height = s.Height
+				res.pixFmt = s.PixFmt
+				if res.durationSec == 0 {
+					if d, err := strconv.ParseFloat(strings.TrimSpace(s.Duration), 64); err == nil && d > 0 {
+						res.durationSec = d
+					}
+				}
+			}
+		case "audio":
+			res.hasAudio = true
+			if res.durationSec == 0 {
+				if d, err := strconv.ParseFloat(strings.TrimSpace(s.Duration), 64); err == nil && d > 0 {
+					res.durationSec = d
+				}
+			}
+		}
+	}
+	return res, nil
 }
 
 func (c *Converter) run(ctx context.Context, args ...string) error {
@@ -162,12 +493,8 @@ func (c *Converter) run(ctx context.Context, args ...string) error {
 	return nil
 }
 
-func (c *Converter) duration(ctx context.Context, path string) (uint32, error) {
-	ffprobe := "ffprobe"
-	if filepath.Base(c.ffmpeg) == "ffmpeg" {
-		ffprobe = filepath.Join(filepath.Dir(c.ffmpeg), "ffprobe")
-	}
-	cmd := exec.CommandContext(ctx, ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path)
+func (c *Converter) duration(ctx context.Context, path string, maxSeconds int) (uint32, error) {
+	cmd := exec.CommandContext(ctx, c.ffprobePath(), "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path)
 	output, err := cmd.Output()
 	if err != nil {
 		return 0, fmt.Errorf("run ffprobe: %w", err)
@@ -179,14 +506,37 @@ func (c *Converter) duration(ctx context.Context, path string) (uint32, error) {
 	if seconds <= 0 {
 		return 0, fmt.Errorf("converted audio duration %.2fs is outside the supported range", seconds)
 	}
-	if seconds > MaxAudioSeconds {
-		// Opus frame alignment/lookahead can push a -t trimmed stream slightly past MaxAudioSeconds (e.g. 10.0065s).
-		if seconds <= float64(MaxAudioSeconds)+0.5 {
-			return MaxAudioSeconds, nil
+	if seconds > float64(maxSeconds) {
+		// Opus frame alignment/lookahead can push a -t trimmed stream slightly past maxSeconds (e.g. +0.0065s).
+		if seconds <= float64(maxSeconds)+0.5 {
+			return uint32(maxSeconds), nil
 		}
 		return 0, fmt.Errorf("converted audio duration %.2fs is outside the supported range", seconds)
 	}
-	return uint32(math.Ceil(seconds)), nil
+	rounded := uint32(math.Round(seconds))
+	if rounded < 1 {
+		rounded = 1
+	}
+	return rounded, nil
+}
+
+func (c *Converter) ffprobePath() string {
+	base := filepath.Base(c.ffmpeg)
+	probeName := "ffprobe"
+	if strings.HasSuffix(strings.ToLower(base), ".exe") {
+		probeName = "ffprobe.exe"
+	}
+	if !strings.ContainsRune(c.ffmpeg, os.PathSeparator) && base == c.ffmpeg {
+		return probeName
+	}
+	if strings.EqualFold(strings.TrimSuffix(base, filepath.Ext(base)), "ffmpeg") {
+		dir := filepath.Dir(c.ffmpeg)
+		if dir == "." {
+			return "." + string(os.PathSeparator) + probeName
+		}
+		return filepath.Join(dir, probeName)
+	}
+	return probeName
 }
 
 func writeInput(data []byte, suffix string) (string, func(), error) {
@@ -220,7 +570,7 @@ func tempPath(suffix string) (string, func(), error) {
 
 func suffixFor(mimeType string, kind command.MediaKind) string {
 	if strings.Contains(mimeType, "/") {
-		subtype := strings.TrimSpace(strings.SplitN(strings.SplitN(mimeType, ";", 2)[0], "/", 2)[1])
+		subtype := strings.ToLower(strings.TrimSpace(strings.SplitN(strings.SplitN(mimeType, ";", 2)[0], "/", 2)[1]))
 		switch subtype {
 		case "jpeg":
 			return ".jpg"
@@ -228,8 +578,9 @@ func suffixFor(mimeType string, kind command.MediaKind) string {
 			return ".mov"
 		case "x-matroska":
 			return ".mkv"
-		default:
-			return "." + subtype
+		}
+		if clean := sanitizeExt(subtype); clean != "" {
+			return "." + clean
 		}
 	}
 	switch kind {
@@ -240,6 +591,21 @@ func suffixFor(mimeType string, kind command.MediaKind) string {
 	case command.MediaAudio:
 		return ".audio"
 	default:
-		return filepath.Ext(mimeType)
+		return ".bin"
 	}
+}
+
+func sanitizeExt(subtype string) string {
+	if subtype == "" || strings.Contains(subtype, "..") {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range subtype {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '+' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			return ""
+		}
+	}
+	return strings.Trim(b.String(), ".")
 }
