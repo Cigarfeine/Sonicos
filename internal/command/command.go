@@ -9,16 +9,106 @@ import (
 )
 
 type Message struct {
-	ID     string
-	Chat   string
-	Sender string
-	Text   string
-	Group  bool
+	ID              string
+	Chat            string
+	Sender          string
+	Text            string
+	Group           bool
+	MentionedJIDs   []string
+	QuotedSender    string
+	QuotedMessageID string
+	MediaSource     MediaSource
+	GroupService    GroupService
+}
+
+type MediaKind string
+
+const (
+	MediaImage MediaKind = "image"
+	MediaVideo MediaKind = "video"
+	MediaAudio MediaKind = "audio"
+)
+
+type Attachment struct {
+	Kind     MediaKind
+	MIMEType string
+	Data     []byte
+}
+
+type MediaSource interface {
+	Download(context.Context) (Attachment, error)
+}
+
+type Sticker struct {
+	Data     []byte
+	MIMEType string
+	Animated bool
+	Audio    bool
+	Seconds  uint32
+}
+
+type Reply struct {
+	Text     string
+	Mentions []string
+	Sticker  *Sticker
+}
+
+type ParticipantAction string
+
+const (
+	ParticipantAdd     ParticipantAction = "add"
+	ParticipantRemove  ParticipantAction = "remove"
+	ParticipantPromote ParticipantAction = "promote"
+	ParticipantDemote  ParticipantAction = "demote"
+)
+
+type GroupParticipant struct {
+	JID          string
+	PhoneNumber  string
+	IsAdmin      bool
+	IsSuperAdmin bool
+}
+
+type GroupInfo struct {
+	JID          string
+	Name         string
+	Topic        string
+	Owner        string
+	BotJID       string
+	Locked       bool
+	Announce     bool
+	Approval     bool
+	EphemeralSec uint32
+	MemberAddAll bool
+	Participants []GroupParticipant
+}
+
+type GroupRequest struct {
+	JID         string
+	RequestedAt int64
+}
+
+type GroupService interface {
+	GetInfo(ctx context.Context, groupJID string) (GroupInfo, error)
+	UpdateParticipants(ctx context.Context, groupJID string, targets []string, action ParticipantAction) error
+	SetName(ctx context.Context, groupJID, name string) error
+	SetDescription(ctx context.Context, groupJID, description string) error
+	SetPhoto(ctx context.Context, groupJID string, image []byte) error
+	SetAnnounce(ctx context.Context, groupJID string, announce bool) error
+	SetLocked(ctx context.Context, groupJID string, locked bool) error
+	SetJoinApproval(ctx context.Context, groupJID string, requireApproval bool) error
+	SetMemberAddMode(ctx context.Context, groupJID string, allowAll bool) error
+	SetDisappearing(ctx context.Context, groupJID string, seconds uint32) error
+	GetInviteLink(ctx context.Context, groupJID string, reset bool) (string, error)
+	GetJoinRequests(ctx context.Context, groupJID string) ([]GroupRequest, error)
+	UpdateJoinRequests(ctx context.Context, groupJID string, targets []string, approve bool) error
+	RevokeMessage(ctx context.Context, chatJID, senderJID, messageID string) error
+	Leave(ctx context.Context, groupJID string) error
 }
 
 type Handler func(context.Context, Message, []string, ReplyFunc) error
 
-type ReplyFunc func(context.Context, string) error
+type ReplyFunc func(context.Context, Reply) error
 
 type Command struct {
 	Name        string

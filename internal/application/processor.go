@@ -81,7 +81,7 @@ func (p *Processor) Handle(parent context.Context, message command.Message, repl
 	}
 	if !dispatched {
 		p.logger.Warn("unknown bot command", "chat", message.Chat, "message_id", message.ID)
-		if err := reply(ctx, fmt.Sprintf("Unknown command. Send %shelp to see available commands.", p.prefix)); err != nil {
+		if err := reply(ctx, command.Reply{Text: fmt.Sprintf("Unknown command. Send %shelp to see available commands.", p.prefix)}); err != nil {
 			return fmt.Errorf("reply to unknown command: %w", err)
 		}
 	}

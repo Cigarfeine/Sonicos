@@ -15,5 +15,5 @@ func init() {
 }
 
 func ping(ctx context.Context, _ command.Message, _ []string, reply command.ReplyFunc) error {
-	return reply(ctx, "Pong")
+	return reply(ctx, command.Reply{Text: "Pong"})
 }

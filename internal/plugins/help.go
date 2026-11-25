@@ -31,5 +31,5 @@ func help(ctx context.Context, _ command.Message, _ []string, reply command.Repl
 	for _, cmd := range commands {
 		fmt.Fprintf(&output, "\n%s — %s", cmd.Name, cmd.Description)
 	}
-	return reply(ctx, output.String())
+	return reply(ctx, command.Reply{Text: output.String()})
 }

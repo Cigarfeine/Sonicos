@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/sonicos/whatsapp-bot/internal/command"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types/events"
 )
 
@@ -24,13 +26,26 @@ func (b *Bot) runWorker(ctx context.Context) {
 }
 
 func (b *Bot) processMessage(ctx context.Context, evt *events.Message) error {
-	message, ok := DecodeMessage(evt)
+	message, ok := DecodeMessage(b.client, evt)
 	if !ok {
 		return nil
 	}
 
-	reply := func(ctx context.Context, text string) error {
-		_, err := b.client.SendMessage(ctx, evt.Info.Chat, EncodeQuotedReply(evt, text))
+	reply := func(ctx context.Context, response command.Reply) error {
+		var outgoing *waE2E.Message
+		if response.Sticker != nil {
+			var err error
+			outgoing, err = b.encodeSticker(ctx, *response.Sticker, evt)
+			if err != nil {
+				return err
+			}
+		} else {
+			if response.Text == "" {
+				return fmt.Errorf("reply must contain text or sticker media")
+			}
+			outgoing = EncodeQuotedReply(evt, response.Text, response.Mentions...)
+		}
+		_, err := b.client.SendMessage(ctx, evt.Info.Chat, outgoing)
 		if err != nil {
 			return fmt.Errorf("send quoted reply: %w", err)
 		}
