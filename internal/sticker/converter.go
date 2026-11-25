@@ -41,6 +41,7 @@ type mediaProbe struct {
 	hasVideo       bool
 	hasAttachedPic bool
 	hasAudio       bool
+	audioStreamIdx int
 	width          int
 	height         int
 	pixFmt         string
@@ -82,6 +83,13 @@ func (c *Converter) ToWebP(ctx context.Context, attachment command.Attachment) (
 	if err != nil {
 		return command.Sticker{}, err
 	}
+	if animated && CountWebpAnimFrames(webpData) <= 1 {
+		animated = false
+		webpData, exifOffset, err = c.encodeWebPWithLadder(ctx, inputPath, info, false, MaxStickerSeconds, meta)
+		if err != nil {
+			return command.Sticker{}, err
+		}
+	}
 	return command.Sticker{
 		Data:       webpData,
 		MIMEType:   "image/webp",
@@ -115,7 +123,7 @@ func (c *Converter) ToSoundSticker(ctx context.Context, attachment command.Attac
 		return command.Sticker{}, errors.New("input media has no audio stream")
 	}
 
-	audioData, seconds, waveform, err := c.encodeOpusWithWaveform(ctx, inputPath, MaxSoundStickerSeconds)
+	audioData, seconds, waveform, err := c.encodeOpusWithWaveform(ctx, inputPath, info.audioStreamIdx, MaxSoundStickerSeconds)
 	if err != nil {
 		return command.Sticker{}, err
 	}
@@ -139,6 +147,10 @@ func (c *Converter) ToSoundSticker(ctx context.Context, attachment command.Attac
 			clipMax = MaxSoundStickerSeconds
 		}
 		webpData, exifOffset, err = c.encodeWebPWithLadder(ctx, inputPath, info, true, clipMax, meta)
+		if err == nil && CountWebpAnimFrames(webpData) <= 1 {
+			animated = false
+			webpData, exifOffset, err = c.encodeWebPWithLadder(ctx, inputPath, info, false, MaxSoundStickerSeconds, meta)
+		}
 	case info.hasAttachedPic:
 		webpData, exifOffset, err = c.encodeWebPWithLadder(ctx, inputPath, info, false, MaxSoundStickerSeconds, meta)
 	default:
@@ -187,7 +199,8 @@ func (c *Converter) ToOpus(ctx context.Context, attachment command.Attachment) (
 	}
 	defer cleanup()
 
-	data, seconds, waveform, err := c.encodeOpusWithWaveform(ctx, inputPath, MaxAudioSeconds)
+	info, _ := c.probeMedia(ctx, inputPath)
+	data, seconds, waveform, err := c.encodeOpusWithWaveform(ctx, inputPath, info.audioStreamIdx, MaxAudioSeconds)
 	if err != nil {
 		return command.Sticker{}, err
 	}
@@ -211,17 +224,23 @@ func validateAttachment(attachment command.Attachment) error {
 	return nil
 }
 
-func (c *Converter) encodeOpusWithWaveform(ctx context.Context, inputPath string, maxSeconds int) ([]byte, uint32, []byte, error) {
+func (c *Converter) encodeOpusWithWaveform(ctx context.Context, inputPath string, audioStreamIdx, maxSeconds int) ([]byte, uint32, []byte, error) {
 	outputPath, removeOutput, err := tempPath(".ogg")
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	defer removeOutput()
 
+	mapSpec := "0:a:0"
+	if audioStreamIdx >= 0 {
+		mapSpec = fmt.Sprintf("0:%d", audioStreamIdx)
+	}
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+		"-fflags", "+genpts",
 		"-i", inputPath,
-		"-map", "0:a:0", "-map_metadata", "-1", "-map_chapters", "-1", "-vn",
+		"-map", mapSpec, "-map_metadata", "-1", "-map_chapters", "-1", "-vn",
+		"-af", "asetpts=PTS-STARTPTS,aresample=48000:async=1:first_pts=0",
 		"-t", fmt.Sprint(maxSeconds),
 		"-ac", "2", "-ar", "48000", "-c:a", "libopus", "-b:a", "48k",
 		"-vbr", "on", "-compression_level", "10", "-frame_duration", "20",
@@ -332,7 +351,7 @@ func (c *Converter) encodeWebP(
 		args = append(args,
 			"-t", fmt.Sprint(maxSeconds),
 			"-an",
-			"-vf", fmt.Sprintf("fps=%d,%s", fps, scaleFilter),
+			"-vf", fmt.Sprintf("setpts=PTS-STARTPTS,fps=%d,%s", fps, scaleFilter),
 			"-vcodec", "libwebp_anim",
 			"-lossless", "0",
 			"-q:v", fmt.Sprint(quality),
@@ -426,12 +445,15 @@ func (c *Converter) probeMedia(ctx context.Context, path string) (mediaProbe, er
 			Duration string `json:"duration"`
 		} `json:"format"`
 		Streams []struct {
+			Index       int    `json:"index"`
 			CodecType   string `json:"codec_type"`
 			Width       int    `json:"width"`
 			Height      int    `json:"height"`
+			Channels    int    `json:"channels"`
 			PixFmt      string `json:"pix_fmt"`
 			Duration    string `json:"duration"`
 			Disposition struct {
+				Default     int `json:"default"`
 				AttachedPic int `json:"attached_pic"`
 			} `json:"disposition"`
 		} `json:"streams"`
@@ -440,10 +462,11 @@ func (c *Converter) probeMedia(ctx context.Context, path string) (mediaProbe, er
 		return mediaProbe{}, fmt.Errorf("parse ffprobe output: %w", err)
 	}
 
-	var res mediaProbe
+	res := mediaProbe{audioStreamIdx: -1}
 	if d, err := strconv.ParseFloat(strings.TrimSpace(parsed.Format.Duration), 64); err == nil && d > 0 {
 		res.durationSec = d
 	}
+	audioScore := -1
 	for _, s := range parsed.Streams {
 		switch s.CodecType {
 		case "video":
@@ -469,6 +492,17 @@ func (c *Converter) probeMedia(ctx context.Context, path string) (mediaProbe, er
 			}
 		case "audio":
 			res.hasAudio = true
+			score := 0
+			if s.Channels > 0 {
+				score += 1
+			}
+			if s.Disposition.Default != 0 {
+				score += 2
+			}
+			if score > audioScore {
+				audioScore = score
+				res.audioStreamIdx = s.Index
+			}
 			if res.durationSec == 0 {
 				if d, err := strconv.ParseFloat(strings.TrimSpace(s.Duration), 64); err == nil && d > 0 {
 					res.durationSec = d

@@ -286,4 +286,42 @@ func TestConverter_LiveFFmpeg_ToWebP_And_ToSoundSticker(t *testing.T) {
 			t.Fatal("expected error for image input to ToSoundSticker")
 		}
 	})
+
+	t.Run("delayed_audio_mp4_zeroes_start_pts", func(t *testing.T) {
+		mp4 := genTestMedia(t,
+			"-f", "lavfi", "-i", "color=c=blue:s=320x240:d=5",
+			"-itsoffset", "2", "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+			"-c:v", "libx264", "-c:a", "aac", "-f", "mp4",
+		)
+		st, err := c.ToSoundSticker(ctx, command.Attachment{Kind: command.MediaVideo, MIMEType: "video/mp4", Data: mp4})
+		if err != nil {
+			t.Fatalf("ToSoundSticker delayed audio: %v", err)
+		}
+		oggPath := filepath.Join(t.TempDir(), "out.ogg")
+		if err := os.WriteFile(oggPath, st.AudioData, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := exec.Command("ffprobe", "-v", "error", "-show_entries", "stream=start_pts", "-of", "default=noprint_wrappers=1:nokey=1", oggPath).Output()
+		if err != nil {
+			t.Fatalf("ffprobe output ogg: %v", err)
+		}
+		if got := string(bytes.TrimSpace(out)); got != "0" {
+			t.Fatalf("expected Ogg/Opus start_pts=0, got %q", got)
+		}
+	})
+
+	t.Run("static_frame_video_downgrades_to_static_webp", func(t *testing.T) {
+		mp4 := genTestMedia(t,
+			"-f", "lavfi", "-i", "color=c=blue:s=320x240:d=3",
+			"-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+			"-c:v", "libx264", "-c:a", "aac", "-shortest", "-f", "mp4",
+		)
+		st, err := c.ToSoundSticker(ctx, command.Attachment{Kind: command.MediaVideo, MIMEType: "video/mp4", Data: mp4})
+		if err != nil {
+			t.Fatalf("ToSoundSticker static video: %v", err)
+		}
+		if st.Animated || !st.Audio || st.ExifOffset == 0 || len(st.Data) > MaxStaticBytes {
+			t.Fatalf("expected static sound sticker downgrade, got anim=%v audio=%v exif=%d len=%d", st.Animated, st.Audio, st.ExifOffset, len(st.Data))
+		}
+	})
 }

@@ -30,6 +30,7 @@ func (b *Bot) processMessage(ctx context.Context, evt *events.Message) error {
 	if !ok {
 		return nil
 	}
+	message.ModerationStore = b.moderation
 
 	reply := func(ctx context.Context, response command.Reply) error {
 		var outgoing *waE2E.Message

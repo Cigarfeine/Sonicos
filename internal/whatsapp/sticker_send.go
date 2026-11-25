@@ -121,7 +121,7 @@ func buildSoundStickerMessage(
 
 	var stickerCtx *waE2E.ContextInfo
 	if source != nil {
-		stickerCtx = quotedContext(source)
+		stickerCtx = quotedContextLite(source)
 	} else {
 		stickerCtx = &waE2E.ContextInfo{}
 	}
@@ -332,5 +332,19 @@ func quotedContext(evt *events.Message) *waE2E.ContextInfo {
 		Participant:   proto.String(evt.Info.Sender.String()),
 		RemoteJID:     proto.String(evt.Info.Chat.String()),
 		QuotedMessage: evt.Message,
+	}
+}
+
+func quotedContextLite(evt *events.Message) *waE2E.ContextInfo {
+	preview := extractText(evt.Message)
+	if preview == "" {
+		preview = "Media"
+	}
+	return &waE2E.ContextInfo{
+		StanzaID:    proto.String(string(evt.Info.ID)),
+		Participant: proto.String(evt.Info.Sender.ToNonAD().String()),
+		QuotedMessage: &waE2E.Message{
+			Conversation: proto.String(preview),
+		},
 	}
 }

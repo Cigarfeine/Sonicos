@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/sonicos/whatsapp-bot/internal/application"
+	"github.com/sonicos/whatsapp-bot/internal/command"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types/events"
@@ -14,11 +15,16 @@ import (
 )
 
 type Bot struct {
-	client    *whatsmeow.Client
-	processor *application.Processor
-	workers   int
-	queue     chan *events.Message
-	logger    *slog.Logger
+	client     *whatsmeow.Client
+	processor  *application.Processor
+	moderation command.ModerationStore
+	workers    int
+	queue      chan *events.Message
+	logger     *slog.Logger
+}
+
+func (b *Bot) SetModerationStore(store command.ModerationStore) {
+	b.moderation = store
 }
 
 func NewBot(store *sqlstore.Container, processor *application.Processor, workers, queueSize int, logger *slog.Logger) (*Bot, error) {
