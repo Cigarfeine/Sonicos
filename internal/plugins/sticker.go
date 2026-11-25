@@ -15,12 +15,14 @@ func init() {
 	command.Register(command.Command{
 		Name:        "sticker",
 		Aliases:     []string{"s"},
+		Category:    "Media & Stickers",
 		Description: "Create a sticker from an image or short video",
 		Handler:     makeSticker,
 	})
 	command.Register(command.Command{
 		Name:        "stdio",
 		Aliases:     []string{"audiosticker"},
+		Category:    "Media & Stickers",
 		Description: "Create an Opus audio sticker from audio or video",
 		Handler:     makeAudioSticker,
 	})

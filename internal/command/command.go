@@ -113,6 +113,7 @@ type ReplyFunc func(context.Context, Reply) error
 type Command struct {
 	Name        string
 	Aliases     []string
+	Category    string
 	Description string
 	Handler     Handler
 }

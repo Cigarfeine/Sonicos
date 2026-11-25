@@ -9,6 +9,7 @@ import (
 func init() {
 	command.Register(command.Command{
 		Name:        "ping",
+		Category:    "General",
 		Description: "Check whether the bot is responding",
 		Handler:     ping,
 	})
