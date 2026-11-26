@@ -67,6 +67,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .card{background:var(--panel);border:1px solid var(--line);padding:22px}
 .card+.card{margin-top:16px}
 .card-h{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px;font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.link-card{margin-top:0}
 .grid{display:grid;gap:1px;background:var(--line);border:1px solid var(--line)}
 .grid.stats{grid-template-columns:repeat(auto-fit,minmax(190px,1fr));margin-bottom:16px;gap:0;background:none;border:0;border-left:1px solid var(--line);border-top:1px solid var(--line)}
 .grid.stats .tile{border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
@@ -550,35 +551,40 @@ views.connection=async root=>{
     const msgs={connecting:['warn','Connecting to WhatsApp…'],qr:['warn','Waiting for you to scan the QR code.'],pairing:['warn','Waiting for you to enter the pairing code on your phone.'],disconnected:['err','Not linked. Choose a method below to connect.']};
     const [c,m]=msgs[s.state]||msgs.disconnected;
     cx.innerHTML=`<div class="banner ${c}"><span class="dot ${c}"></span><span>${esc(m)}</span></div>
-    <div class="tabs" role="tablist"><button role="tab" data-t="qr" aria-selected="${tab==='qr'}">QR code</button><button role="tab" data-t="pair" aria-selected="${tab==='pair'}">Phone number</button></div><div id="cx-body"></div>`;
-    $$('[data-t]',cx).forEach(b=>b.onclick=()=>{ tab=b.dataset.t; render(); });
-    tab==='qr'?qrPanel():pairPanel();
+    <div class="link-grid" id="cx-grid">
+      <div class="card link-card" id="cx-qr"></div>
+      <div class="card link-card" id="cx-pair"></div>
+    </div>`;
+    qrPanel($('#cx-qr'));
+    pairPanel($('#cx-pair'));
   }
-  function qrPanel(){
-    const b=$('#cx-body'); const expired=qr&&qr.expires&&qr.expires<Date.now();
+  function qrPanel(el){
+    const b=el; const expired=qr&&qr.expires&&qr.expires<Date.now();
     const box = qr
       ? `<div class="qr-box" id="qrbox"></div>`
       : `<div class="qr-box"><div class="qr-wait">${qrErr?esc(qrErr):'Waiting for the bot to generate a QR code…'}</div></div>`;
-    b.innerHTML=`<div class="link-grid"><div style="position:relative">${box}${expired?`<div class="qr-over"><b>QR code expired</b><button class="btn sm" id="q-new" type="button">Get new QR</button></div>`:''}</div>
-    <div><ol class="steps"><li><span><b>Open WhatsApp</b> on your phone.</span></li><li><span>Go to <b>Settings → Linked devices</b> and tap <b>Link a device</b>.</span></li><li><span><b>Point your camera</b> at this QR code. The page updates automatically once linked.</span></li></ol>
+    b.innerHTML=`<div class="card-h"><span>QR code</span></div>
+    <div style="position:relative">${box}${expired?`<div class="qr-over"><b>QR code expired</b><button class="btn sm" id="q-new" type="button">Get new QR</button></div>`:''}</div>
+    <ol class="steps"><li><span><b>Open WhatsApp</b> on your phone.</span></li><li><span>Go to <b>Settings → Linked devices</b> and tap <b>Link a device</b>.</span></li><li><span><b>Point your camera</b> at this QR code. The page updates automatically once linked.</span></li></ol>
     <p class="mono muted" style="font-size:12px;margin:22px 0 0" id="q-cd"></p>
-    <div class="actions" style="margin-top:18px"><button class="btn ghost" id="q-ref" type="button">Refresh QR</button>${MOCK?'<button class="btn" id="q-sim" type="button">Simulate scan</button><span class="tag warn">Demo QR · not scannable</span>':''}</div></div></div>`;
+    <div class="actions" style="margin-top:18px"><button class="btn ghost" id="q-ref" type="button">Refresh QR</button>${MOCK?'<button class="btn" id="q-sim" type="button">Simulate scan</button><span class="tag warn">Demo QR · not scannable</span>':''}</div>`;
     drawQR();
     $('#q-ref').onclick=e=>requestQR(e.target);
     const qs=$('#q-sim'); if(qs) qs.onclick=e=>run(e.target,()=>api('/__mock/connect',{method:'POST'})); const n=$('#q-new'); if(n) n.onclick=e=>requestQR(e.target);
   }
-  function pairPanel(){
-    const b=$('#cx-body');
-    b.innerHTML=`<div class="link-grid"><div><form class="form" id="f-pair" novalidate>
+  function pairPanel(el){
+    const b=el;
+    b.innerHTML=`<div class="card-h"><span>Phone number</span></div>
+    <form class="form" id="f-pair" novalidate>
       <div class="field"><label for="p-num">WhatsApp phone number</label><div class="phone-row">
         <select id="p-cc" aria-label="Country code"><option value="">Country</option>${COUNTRIES.map(c=>`<option value="${c[2]}" data-iso="${c[0]}" ${c[0]===ccIso?'selected':''}>${esc(c[1])} (+${c[2]})</option>`).join('')}</select>
         <input id="p-num" type="tel" inputmode="numeric" autocomplete="tel-national" placeholder="Phone number" aria-describedby="p-h"></div>
         <div class="hint" id="p-h">Enter the number without the country code. Never share a WhatsApp password or verification SMS. This flow only needs the phone number.</div></div>
       <div class="err-t" id="p-e" role="alert"></div>
-      <div><button class="btn" type="submit" id="p-go" ${pairing?'disabled':''}>Get pairing code</button></div></form></div>
-      <div id="p-out"></div></div>`;
+      <div><button class="btn" type="submit" id="p-go" ${pairing?'disabled':''}>Get pairing code</button></div></form>
+    <div id="p-out"></div>`;
     $('#p-cc').onchange=e=>{ cc=e.target.value; ccIso=e.target.selectedOptions[0].dataset.iso||''; };
-    paintPair();
+    paintPair($('#cx-pair'));
     $('#f-pair').onsubmit=async ev=>{
       ev.preventDefault(); const err=$('#p-e');
       let num=$('#p-num').value.replace(/\D/g,'').replace(/^0+/,'');
@@ -591,11 +597,11 @@ views.connection=async root=>{
         const code=r&&(r.pairing_code||r.code); if(!code) throw new ApiError('The backend did not return a pairing code.',502);
         pair={code:String(code),phone:`+${cc}${num}`,expires:r.expires_at?Date.parse(r.expires_at):null};
       }catch(e){ err.textContent=e.message; }
-      pairing=false; const go=$('#p-go'); if(go) go.disabled=false; paintPair();
+      pairing=false; const go=$('#p-go'); if(go) go.disabled=false; paintPair($('#cx-pair'));
     };
   }
-  function paintPair(){
-    const o=$('#p-out'); if(!o) return;
+  function paintPair(el){
+    const o=el?$('#p-out',el):$('#p-out'); if(!o) return;
     if(!pair){ o.innerHTML=''; return; }
     const c=pair.code.replace(/[^A-Za-z0-9]/g,''); const shown=c.length===8?c.slice(0,4)+'-'+c.slice(4):pair.code;
     o.innerHTML=`<div class="eyebrow" style="margin-bottom:10px">Pairing code for ${esc(pair.phone)}</div><div class="code">${esc(shown)}</div>
