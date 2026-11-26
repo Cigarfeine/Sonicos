@@ -13,6 +13,7 @@ import (
 	"github.com/sonicos/whatsapp-bot/internal/command"
 	"github.com/sonicos/whatsapp-bot/internal/config"
 	"github.com/sonicos/whatsapp-bot/internal/idempotency"
+	"github.com/sonicos/whatsapp-bot/internal/moderation"
 	_ "github.com/sonicos/whatsapp-bot/internal/plugins"
 	"github.com/sonicos/whatsapp-bot/internal/whatsapp"
 )
@@ -60,6 +61,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	bot.SetModerationStore(moderation.NewRedisStore(deduper.Client()))
 	logger.Info("starting WhatsApp bot", "workers", cfg.Workers, "queue_size", cfg.QueueSize, "prefix", cfg.Prefix)
 	return bot.Run(ctx)
 }

@@ -47,7 +47,10 @@ func NewProcessor(registry *command.Registry, idempotency Idempotency, prefix st
 
 func (p *Processor) Handle(parent context.Context, message command.Message, reply Reply) error {
 	text := strings.TrimSpace(message.Text)
-	if text == "" || !strings.HasPrefix(text, p.prefix) {
+	isCommand := text != "" && strings.HasPrefix(text, p.prefix)
+	watchers := p.registry.Watchers()
+	shouldWatch := !isCommand && message.Group && !message.FromMe && len(watchers) > 0
+	if !isCommand && !shouldWatch {
 		return nil
 	}
 
@@ -75,14 +78,23 @@ func (p *Processor) Handle(parent context.Context, message command.Message, repl
 		}
 	}()
 
-	dispatched, err := p.registry.Dispatch(ctx, p.prefix, message, reply)
-	if err != nil {
-		return fmt.Errorf("dispatch command: %w", err)
-	}
-	if !dispatched {
-		p.logger.Warn("unknown bot command", "chat", message.Chat, "message_id", message.ID)
-		if err := reply(ctx, command.Reply{Text: fmt.Sprintf("Unknown command. Send %shelp to see available commands.", p.prefix)}); err != nil {
-			return fmt.Errorf("reply to unknown command: %w", err)
+	var dispatched bool
+	if isCommand {
+		dispatched, err = p.registry.Dispatch(ctx, p.prefix, message, reply)
+		if err != nil {
+			return fmt.Errorf("dispatch command: %w", err)
+		}
+		if !dispatched {
+			p.logger.Warn("unknown bot command", "chat", message.Chat, "message_id", message.ID)
+			if err := reply(ctx, command.Reply{Text: fmt.Sprintf("Unknown command. Send %shelp to see available commands.", p.prefix)}); err != nil {
+				return fmt.Errorf("reply to unknown command: %w", err)
+			}
+		}
+	} else {
+		for _, w := range watchers {
+			if err := w(ctx, message, reply); err != nil {
+				return fmt.Errorf("run message watcher: %w", err)
+			}
 		}
 	}
 
@@ -90,7 +102,7 @@ func (p *Processor) Handle(parent context.Context, message command.Message, repl
 		return fmt.Errorf("complete message processing: %w", err)
 	}
 	completed = true
-	if dispatched {
+	if isCommand && dispatched {
 		p.logger.Info("command handled", "command", strings.Fields(strings.TrimPrefix(text, p.prefix))[0], "chat", message.Chat, "message_id", message.ID)
 	}
 	return nil

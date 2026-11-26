@@ -2,8 +2,10 @@ package plugins
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/sonicos/whatsapp-bot/internal/command"
 	"github.com/sonicos/whatsapp-bot/internal/sticker"
@@ -23,14 +25,14 @@ func init() {
 		Name:        "stdio",
 		Aliases:     []string{"audiosticker"},
 		Category:    "Media & Stickers",
-		Description: "Create an Opus audio sticker from audio or video",
+		Description: "Create a playable WhatsApp sound sticker from audio or video",
 		Handler:     makeAudioSticker,
 	})
 }
 
 func makeSticker(ctx context.Context, message command.Message, _ []string, reply command.ReplyFunc) error {
 	if message.MediaSource == nil {
-		return reply(ctx, command.Reply{Text: "Attach or reply to an image or video, then send !sticker."})
+		return reply(ctx, command.Reply{Text: fmt.Sprintf("Attach or reply to an image or video, then send %ssticker.", botPrefix())})
 	}
 	media, err := message.MediaSource.Download(ctx)
 	if err != nil {
@@ -47,17 +49,38 @@ func makeSticker(ctx context.Context, message command.Message, _ []string, reply
 
 func makeAudioSticker(ctx context.Context, message command.Message, _ []string, reply command.ReplyFunc) error {
 	if message.MediaSource == nil {
-		return reply(ctx, command.Reply{Text: "Attach or reply to audio or a video with audio, then send !stdio."})
+		return reply(ctx, command.Reply{Text: fmt.Sprintf("Attach or reply to audio or a video with audio, then send %sstdio.", botPrefix())})
 	}
 	media, err := message.MediaSource.Download(ctx)
 	if err != nil {
 		slog.Error("load audio sticker source", "error", err)
-		return reply(ctx, command.Reply{Text: "Couldn't download the audio. Try a different message and retry."})
+		return reply(ctx, command.Reply{Text: "Couldn't download the audio or video. Try a different message and retry."})
 	}
-	converted, err := stickerConverter.ToOpus(ctx, media)
+	converted, err := stickerConverter.ToSoundSticker(ctx, media)
 	if err != nil {
-		slog.Error("create Opus audio sticker", "error", err)
-		return reply(ctx, command.Reply{Text: "Couldn't convert that audio. It must be audio or a video with an audio track."})
+		slog.Error("create sound sticker", "error", err)
+		return reply(ctx, command.Reply{Text: "Couldn't convert that media into a sound sticker. It must be audio or a video with an audio track."})
 	}
+	var peak byte
+	for _, v := range converted.Waveform {
+		if v > peak {
+			peak = v
+		}
+	}
+	slog.Debug("sound sticker ready",
+		"webp_bytes", len(converted.Data),
+		"audio_bytes", len(converted.AudioData),
+		"seconds", converted.Seconds,
+		"animated", converted.Animated,
+		"exif_offset", converted.ExifOffset,
+		"waveform_peak", peak,
+	)
 	return reply(ctx, command.Reply{Sticker: &converted})
+}
+
+func botPrefix() string {
+	if prefix := strings.TrimSpace(os.Getenv("BOT_PREFIX")); prefix != "" {
+		return prefix
+	}
+	return "!"
 }

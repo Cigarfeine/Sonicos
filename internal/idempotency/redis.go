@@ -72,6 +72,10 @@ func (s *Store) Release(ctx context.Context, messageID, token string) error {
 	return nil
 }
 
+func (s *Store) Client() *redis.Client {
+	return s.client
+}
+
 func (s *Store) Close() error {
 	return s.client.Close()
 }

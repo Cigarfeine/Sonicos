@@ -1,6 +1,7 @@
 package whatsapp
 
 import (
+	"encoding/hex"
 	"strings"
 
 	"github.com/sonicos/whatsapp-bot/internal/command"
@@ -19,7 +20,8 @@ func DecodeMessage(client *whatsmeow.Client, evt *events.Message) (command.Messa
 		return command.Message{}, false
 	}
 	text := extractText(evt.Message)
-	if text == "" {
+	stickerInfo := extractStickerInfo(evt.Message)
+	if text == "" && stickerInfo == nil && !evt.Info.IsGroup {
 		return command.Message{}, false
 	}
 	ctxInfo := messageContextInfo(evt.Message)
@@ -30,18 +32,38 @@ func DecodeMessage(client *whatsmeow.Client, evt *events.Message) (command.Messa
 		quotedSender = ctxInfo.GetParticipant()
 		quotedID = ctxInfo.GetStanzaID()
 	}
+	var quotedFromMe bool
+	if client != nil && client.Store != nil && client.Store.ID != nil && quotedSender != "" {
+		quotedFromMe = stripJIDUser(quotedSender) == client.Store.ID.User
+	}
 	return command.Message{
-		ID:              string(evt.Info.ID),
-		Chat:            evt.Info.Chat.String(),
-		Sender:          evt.Info.Sender.ToNonAD().String(),
-		Text:            text,
-		Group:           evt.Info.IsGroup,
-		MentionedJIDs:   mentioned,
-		QuotedSender:    quotedSender,
-		QuotedMessageID: quotedID,
-		MediaSource:     newMediaSource(client, evt.Message),
-		GroupService:    newGroupService(client),
+		ID:                 string(evt.Info.ID),
+		Chat:               evt.Info.Chat.String(),
+		Sender:             evt.Info.Sender.ToNonAD().String(),
+		FromMe:             evt.Info.IsFromMe,
+		Text:               text,
+		Group:              evt.Info.IsGroup,
+		MentionedJIDs:      mentioned,
+		QuotedSender:       quotedSender,
+		QuotedMessageID:    quotedID,
+		QuotedFromMe:       quotedFromMe,
+		Sticker:            stickerInfo,
+		QuotedSticker:      extractStickerInfo(quotedMessage(evt.Message)),
+		MediaSource:        newMediaSource(client, evt.Message),
+		StickerAudioSource: newStickerAudioSource(client, evt.Message),
+		GroupService:       newGroupService(client),
 	}, true
+}
+
+func stripJIDUser(jid string) string {
+	jid = strings.TrimSpace(jid)
+	if idx := strings.Index(jid, "@"); idx >= 0 {
+		jid = jid[:idx]
+	}
+	if idx := strings.Index(jid, ":"); idx >= 0 {
+		jid = jid[:idx]
+	}
+	return jid
 }
 
 func EncodeQuotedReply(evt *events.Message, text string, mentions ...string) *waE2E.Message {
@@ -65,6 +87,7 @@ func quotedMessage(message *waE2E.Message) *waE2E.Message {
 }
 
 func messageContextInfo(message *waE2E.Message) *waE2E.ContextInfo {
+	message = unwrapMessage(message, 0)
 	if message == nil {
 		return nil
 	}
@@ -84,6 +107,10 @@ func messageContextInfo(message *waE2E.Message) *waE2E.ContextInfo {
 }
 
 func extractText(message *waE2E.Message) string {
+	message = unwrapMessage(message, 0)
+	if message == nil {
+		return ""
+	}
 	for _, text := range []string{
 		message.GetConversation(),
 		message.GetExtendedTextMessage().GetText(),
@@ -97,4 +124,56 @@ func extractText(message *waE2E.Message) string {
 		}
 	}
 	return ""
+}
+
+func extractStickerInfo(message *waE2E.Message) *command.StickerInfo {
+	st, viaAudioWrapper := unwrapStickerMessage(message, false, 0)
+	if st == nil {
+		return nil
+	}
+	fileSHA := hex.EncodeToString(st.GetFileSHA256())
+	var audioSHA string
+	hasAudio := viaAudioWrapper
+	if au := st.GetAudioMessage(); au != nil {
+		hasAudio = true
+		audioSHA = hex.EncodeToString(au.GetFileSHA256())
+	}
+	if fileSHA == "" && audioSHA == "" {
+		return nil
+	}
+	return &command.StickerInfo{
+		FileSHA256:     fileSHA,
+		AudioSHA256:    audioSHA,
+		IsAudioSticker: hasAudio,
+		IsAnimated:     st.GetIsAnimated(),
+	}
+}
+
+func unwrapStickerMessage(message *waE2E.Message, viaAudioWrapper bool, depth int) (*waE2E.StickerMessage, bool) {
+	if message == nil || depth > 6 {
+		return nil, false
+	}
+	if st := message.GetStickerMessage(); st != nil {
+		return st, viaAudioWrapper
+	}
+	if inner := message.GetAudioStickerMessage().GetMessage(); inner != nil {
+		if st, hasAudio := unwrapStickerMessage(inner, true, depth+1); st != nil {
+			return st, hasAudio
+		}
+	}
+	for _, inner := range []*waE2E.Message{
+		message.GetEphemeralMessage().GetMessage(),
+		message.GetViewOnceMessage().GetMessage(),
+		message.GetViewOnceMessageV2().GetMessage(),
+		message.GetViewOnceMessageV2Extension().GetMessage(),
+		message.GetLottieStickerMessage().GetMessage(),
+		message.GetDeviceSentMessage().GetMessage(),
+	} {
+		if inner != nil {
+			if st, hasAudio := unwrapStickerMessage(inner, viaAudioWrapper, depth+1); st != nil {
+				return st, hasAudio
+			}
+		}
+	}
+	return nil, false
 }

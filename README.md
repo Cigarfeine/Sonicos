@@ -5,7 +5,6 @@ A Go WhatsApp bot built with whatsmeow. It stores WhatsApp session credentials i
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy?repo=github.com/SafwanGanz/Sonicos)
 [![Deploy to Heroku](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https%3A%2F%2Fgithub.com%2FSafwanGanz%2FSonicos)
 
-> The deploy buttons target `https://github.com/SafwanGanz/Sonicos`. The repository must be public and contain these deployment files for either button to work.
 
 ## Requirements
 
