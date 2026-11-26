@@ -132,19 +132,21 @@ All API endpoints require an authenticated session cookie (`sonicos_session`). S
 - Same-origin CORS and origin verification are enforced by default (extend with `CORS_ALLOWED_ORIGINS` only if hosting the UI separately)
 - Do not store secrets in browser localStorage
 
-## Deploy to Railway
+## Deploy to Railway / Heroku (With or Without Volumes)
 
-The Railway configuration builds the root [Dockerfile](Dockerfile) and restarts the service after failures. Railway is the recommended host because its persistent volumes can preserve the SQLite WhatsApp session.
+The Railway configuration builds the root [Dockerfile](Dockerfile) and restarts the service after failures.
 
 The Docker image pre-installs all runtime dependencies:
 - `ffmpeg` — sticker/audio conversion and TTS waveform encoding
 - `Node.js 20 LTS` + `edge-tts` CLI — `!tts` text-to-speech synthesis
 
-1. Push this project to a public GitHub repository and update the deploy button URL above if its owner or repository differs.
-2. Select **Deploy on Railway** and connect the repository.
-3. Add a Redis service (Railway managed Redis or any Redis-compatible endpoint). Set the bot's `REDIS_URL` to that service's connection URL. Redis is used for command idempotency and moderation strike tracking; if Redis is unavailable, the bot falls back to in-memory idempotency and starts anyway, but moderation strikes won't persist across restarts.
-4. Add a persistent volume to the bot service and set its mount path to `/app/data` so the SQLite WhatsApp session survives redeploys.
-5. Set `DASHBOARD_PASSWORD` to a strong alphanumeric or numeric value.
-6. Deploy, open the generated Railway domain URL, sign in with `DASHBOARD_PASSWORD`, and link WhatsApp via QR scan or phone number pairing.
-
-The bot uses SQLite at `./data/sonicos.db`, which resolves to `/app/data/sonicos.db` in the container. Do not run multiple bot replicas against the same SQLite file or WhatsApp session; keep the worker count at one instance.
+### Storage Modes (Auto-Detected)
+- **Local PC / VPS:** Uses `./data/sonicos.db` (SQLite3) + `REDIS_URL` (`redis://localhost:6379/0`) by default.
+- **Railway Free Trial / Heroku with Supabase PostgreSQL (Recommended for Free Cloud):**
+  1. Create a free project on [Supabase](https://supabase.com) and copy the **Session Pooler** (port `5432`) or **Transaction Pooler** (port `6543`) connection string.
+  2. Set `DATABASE_URL` in Railway/Heroku to that `postgresql://...` URL (Sonicos auto-detects `pgx`, SSL, and Supabase pooler settings—no mounted volume and no Redis service required).
+  3. Set `DASHBOARD_PASSWORD` to a strong alphanumeric or numeric value.
+  4. Deploy, open the generated app URL, sign in with `DASHBOARD_PASSWORD`, and link WhatsApp via QR scan or phone number pairing. Both your WhatsApp session and all bot features (`!sreact`, shields, bans, strikes, studio) survive restarts and redeployments permanently.
+- **Railway Free Trial / Heroku with Nothing Attached (Ephemeral Bypass):**
+  - If neither a mounted volume (`RAILWAY_VOLUME_MOUNT_PATH`), Redis, nor Postgres is attached, Sonicos detects the volume-less cloud environment automatically and runs all storage-backed features (`!sreact`, shields, moderation, studio) using the container SQLite database + in-memory idempotency. Note that container restarts/redeploys will reset ephemeral container storage until you attach a PostgreSQL `DATABASE_URL` or a `/app/data` volume.
+- **Railway Paid Plan with Volume + Redis:** Attach Redis (`REDIS_URL`) and a persistent volume at `/app/data` if you prefer SQLite + Redis; keep the replica count at `1` when using SQLite.

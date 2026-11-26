@@ -75,6 +75,11 @@ type Server struct {
 	startedAt time.Time
 	version   string
 
+	dbDriver          string
+	modBackend        string
+	storagePersistent bool
+	cloudPlatform     string
+
 	modMu        sync.Mutex
 	modEvents    []modHistoryItem
 	maxModEvents int
@@ -283,21 +288,24 @@ func NewServer(
 	}
 
 	s := &Server{
-		bot:            bot,
-		registry:       registry,
-		modStore:       modStore,
-		audit:          auditLog,
-		logger:         logger,
-		authPassword:   authPassword,
-		allowedOrigins: originSet,
-		settings:       make(map[string]any),
-		sessions:       make(map[string]time.Time),
-		loginAttempts:  make(map[string][]time.Time),
-		clients:        make(map[chan []byte]struct{}),
-		startedAt:      time.Now(),
-		version:        "v0.1.0",
-		modEvents:      make([]modHistoryItem, 0, 500),
-		maxModEvents:   500,
+		bot:               bot,
+		registry:          registry,
+		modStore:          modStore,
+		audit:             auditLog,
+		logger:            logger,
+		authPassword:      authPassword,
+		allowedOrigins:    originSet,
+		settings:          make(map[string]any),
+		sessions:          make(map[string]time.Time),
+		loginAttempts:     make(map[string][]time.Time),
+		clients:           make(map[chan []byte]struct{}),
+		startedAt:         time.Now(),
+		version:           "v0.1.0",
+		dbDriver:          "sqlite3",
+		modBackend:        "memory",
+		storagePersistent: true,
+		modEvents:         make([]modHistoryItem, 0, 500),
+		maxModEvents:      500,
 	}
 
 	prefix := strings.TrimSpace(os.Getenv("BOT_PREFIX"))
@@ -604,6 +612,20 @@ func (s *Server) removeClient(ch chan []byte) {
 	close(ch)
 }
 
+// SetStorageInfo records the active database and feature store backends for health reporting.
+func (s *Server) SetStorageInfo(dbDriver, modBackend string, persistent bool, platform string) {
+	s.mu.Lock()
+	if dbDriver != "" {
+		s.dbDriver = dbDriver
+	}
+	if modBackend != "" {
+		s.modBackend = modBackend
+	}
+	s.storagePersistent = persistent
+	s.cloudPlatform = platform
+	s.mu.Unlock()
+}
+
 // HandleBotEvent receives asynchronous state updates from the WhatsApp bot and pushes SSE updates.
 func (s *Server) HandleBotEvent(event string, data any) {
 	switch event {
@@ -749,6 +771,26 @@ func (s *Server) buildStatus() statusResponse {
 		}
 	}
 
+	s.mu.RLock()
+	dbDriver := s.dbDriver
+	modBackend := s.modBackend
+	persistent := s.storagePersistent
+	platform := s.cloudPlatform
+	s.mu.RUnlock()
+
+	dbStatus := "ok"
+	dbDetail := fmt.Sprintf("%s (persistent)", dbDriver)
+	if dbDriver == "pgx" {
+		dbDetail = "PostgreSQL (persistent)"
+	} else if !persistent {
+		dbStatus = "degraded"
+		dbDetail = fmt.Sprintf("SQLite ephemeral on %s — add PostgreSQL DATABASE_URL for persistence", platform)
+	}
+	featureDetail := fmt.Sprintf("Active (%s)", modBackend)
+	if modBackend == "pgx" {
+		featureDetail = "PostgreSQL (persistent)"
+	}
+
 	return statusResponse{
 		Connected:        connected,
 		State:            st,
@@ -766,9 +808,9 @@ func (s *Server) buildStatus() statusResponse {
 		Version:          s.version,
 		Health: []healthCheck{
 			{Name: "WhatsApp socket", Status: healthStatus(connected), Detail: healthDetail(connected)},
-			{Name: "Database", Status: "ok", Detail: "Session store healthy"},
+			{Name: "Database", Status: dbStatus, Detail: dbDetail},
+			{Name: "Feature store", Status: "ok", Detail: featureDetail},
 			{Name: "Media scanner", Status: "ok", Detail: "Ready"},
-			{Name: "Webhook queue", Status: "ok", Detail: "No pending deliveries"},
 		},
 	}
 }

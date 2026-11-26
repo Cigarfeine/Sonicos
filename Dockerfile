@@ -30,7 +30,6 @@ RUN mkdir -p /app/data
 
 ENV DATABASE_DRIVER=sqlite3
 ENV DATABASE_URL=file:./data/sonicos.db?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000
-ENV REDIS_URL=redis://localhost:6379/0
 ENV BOT_PREFIX=!
 ENV WORKERS=8
 ENV QUEUE_SIZE=512

@@ -47,19 +47,27 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	sessionStore, err := whatsapp.OpenStore(ctx, cfg.DatabaseDriver, cfg.DatabaseURL)
+	sessionStore, db, err := whatsapp.OpenStoreWithDB(ctx, cfg.DatabaseDriver, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer sessionStore.Close()
 
 	var deduper application.Idempotency
-	deduper, err = idempotency.New(ctx, cfg.RedisURL)
-	if err != nil {
-		logger.Warn("redis unavailable; using in-memory idempotency (moderation strikes disabled)", "error", err)
+	if cfg.RedisURL != "" {
+		redisCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		deduper, err = idempotency.New(redisCtx, cfg.RedisURL)
+		cancel()
+		if err != nil {
+			logger.Warn("redis unavailable; falling back to SQL feature store and in-memory idempotency", "error", err)
+			deduper = idempotency.NewMemory()
+		}
+	} else {
+		logger.Info("cloud environment without REDIS_URL; using SQL feature store and in-memory idempotency", "platform", cfg.CloudPlatform)
 		deduper = idempotency.NewMemory()
 	}
 	defer deduper.Close()
+
 	processor, err := application.NewProcessor(registry, deduper, cfg.Prefix, 30*time.Second, logger)
 	if err != nil {
 		return err
@@ -71,15 +79,35 @@ func run() error {
 	}
 
 	var modStore command.ModerationStore
+	modBackend := "redis"
 	if redisStore, ok := deduper.(*idempotency.Store); ok {
 		modStore = moderation.NewRedisStore(redisStore.Client())
+	} else {
+		sqlModStore, err := moderation.NewSQLStore(ctx, db, cfg.DatabaseDriver)
+		if err != nil {
+			return err
+		}
+		modStore = sqlModStore
+		modBackend = cfg.DatabaseDriver
 	}
 	bot.SetModerationStore(modStore)
+
+	persistent := !cfg.CloudEphemeral
+	if cfg.CloudEphemeral {
+		logger.Warn("running in volume-less ephemeral cloud mode; WhatsApp session and SQL feature store will reset on redeploy unless a PostgreSQL/Supabase DATABASE_URL is configured", "platform", cfg.CloudPlatform, "database_driver", cfg.DatabaseDriver, "feature_store", modBackend)
+	}
+	auditLog.Record("system", "info", "system", "storage", "storage_initialized", "success", "", "storage backends initialized", map[string]any{
+		"platform":        cfg.CloudPlatform,
+		"database_driver": cfg.DatabaseDriver,
+		"feature_store":   modBackend,
+		"persistent":      persistent,
+	})
 
 	var srv *http.Server
 	switch {
 	case cfg.DashboardPassword != "":
 		apiServer := api.NewServer(bot, registry, modStore, auditLog, cfg.DashboardPassword, cfg.CORSAllowedOrigins, logger)
+		apiServer.SetStorageInfo(cfg.DatabaseDriver, modBackend, persistent, cfg.CloudPlatform)
 		bot.SetEventListener(apiServer.HandleBotEvent)
 		srv = &http.Server{
 			Addr:              ":" + cfg.Port,

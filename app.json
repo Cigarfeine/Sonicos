@@ -1,21 +1,21 @@
 {
   "name": "Sonicos WhatsApp Bot",
-  "description": "A Go WhatsApp bot built with whatsmeow, SQLite, Redis, and a password-protected web onboarding dashboard.",
+  "description": "A Go WhatsApp bot built with whatsmeow, SQLite/PostgreSQL, optional Redis, and a password-protected web onboarding dashboard.",
   "repository": "https://github.com/SafwanGanz/Sonicos",
-  "keywords": ["go", "whatsapp", "whatsmeow", "sqlite", "redis"],
+  "keywords": ["go", "whatsapp", "whatsmeow", "sqlite", "postgres", "redis"],
   "stack": "container",
   "env": {
     "DATABASE_DRIVER": {
-      "description": "Whatsmeow session database driver.",
-      "value": "sqlite3"
+      "description": "Optional database driver (sqlite3 or pgx). Automatically switches to pgx when DATABASE_URL starts with postgres:// or postgresql://.",
+      "required": false
     },
     "DATABASE_URL": {
-      "description": "SQLite file URL for the WhatsApp linked-device session.",
+      "description": "Database URL. Set a Supabase, Neon, or Heroku PostgreSQL URL for persistent WhatsApp sessions and bot features with zero volumes or Redis; leave default for ephemeral SQLite.",
       "value": "file:./data/sonicos.db?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000"
     },
     "REDIS_URL": {
-      "description": "Redis connection URL. Use a managed Redis-compatible service.",
-      "required": true
+      "description": "Optional Redis connection URL. If omitted, moderation, shields, and !sreact automatically persist in your SQL database.",
+      "required": false
     },
     "DASHBOARD_PASSWORD": {
       "description": "Password (alphanumeric or numeric) required to unlock the web onboarding dashboard for QR or phone-number WhatsApp linking.",
