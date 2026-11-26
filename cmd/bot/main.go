@@ -50,9 +50,11 @@ func run() error {
 	}
 	defer sessionStore.Close()
 
-	deduper, err := idempotency.New(ctx, cfg.RedisURL)
+	var deduper idempotency.Idempotency
+	deduper, err = idempotency.New(ctx, cfg.RedisURL)
 	if err != nil {
-		return err
+		logger.Warn("redis unavailable; using in-memory idempotency (moderation strikes disabled)", "error", err)
+		deduper = idempotency.NewMemory()
 	}
 	defer deduper.Close()
 
@@ -65,7 +67,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	modStore := moderation.NewRedisStore(deduper.Client())
+
+	var modStore command.ModerationStore
+	if redisStore, ok := deduper.(*idempotency.Store); ok {
+		modStore = moderation.NewRedisStore(redisStore.Client())
+	}
 	bot.SetModerationStore(modStore)
 
 	// Create API server
