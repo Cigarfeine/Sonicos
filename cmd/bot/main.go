@@ -57,7 +57,6 @@ func run() error {
 		deduper = idempotency.NewMemory()
 	}
 	defer deduper.Close()
-
 	processor, err := application.NewProcessor(registry, deduper, cfg.Prefix, 30*time.Second, logger)
 	if err != nil {
 		return err

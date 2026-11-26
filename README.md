@@ -136,7 +136,7 @@ The Docker image pre-installs all runtime dependencies:
 
 1. Push this project to a public GitHub repository and update the deploy button URL above if its owner or repository differs.
 2. Select **Deploy on Railway** and connect the repository.
-3. Add a Redis service (Railway managed Redis or any Redis-compatible endpoint). Set the bot's `REDIS_URL` to that service's connection URL. The bot requires Redis for command idempotency and moderation strike tracking.
+3. Add a Redis service (Railway managed Redis or any Redis-compatible endpoint). Set the bot's `REDIS_URL` to that service's connection URL. Redis is used for command idempotency and moderation strike tracking; if Redis is unavailable, the bot falls back to in-memory idempotency and starts anyway, but moderation strikes won't persist across restarts.
 4. Add a persistent volume to the bot service and set its mount path to `/app/data` so the SQLite WhatsApp session survives redeploys.
 5. Set `DASHBOARD_PASSWORD` to a strong value (default `36545280` is insecure).
 6. Deploy. Open the bot service logs and scan the QR code it prints.

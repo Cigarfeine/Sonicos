@@ -14,6 +14,7 @@ type Idempotency interface {
 	Begin(context.Context, string) (string, bool, error)
 	Complete(context.Context, string, string) error
 	Release(context.Context, string, string) error
+	Close() error
 }
 
 type Reply = command.ReplyFunc
