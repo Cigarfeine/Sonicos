@@ -323,6 +323,10 @@ async function run(btn,fn,okMsg){
 
 /* ---------- state + API ---------- */
 const state = { base:'', status:null, statusAt:0, live:'off', es:null, poll:null, onboarded:false };
+let qr=null, pair=null, pairing=false, qrErr='', cc='', ccIso='';
+const _rn=(navigator.language||'').split('-')[1]||'';
+cc=(COUNTRIES.find(c=>c[0]===_rn.toUpperCase())||[])[2]||'';
+ccIso=(COUNTRIES.find(c=>c[0]===_rn.toUpperCase())||[])[0]||'';
 class ApiError extends Error{ constructor(m,status,data){ super(m); this.status=status; this.data=data; } }
 const bus = (()=>{ const h={}; return {
   on(t,f){ (h[t]=h[t]||new Set()).add(f); return ()=>h[t].delete(f); },
@@ -523,35 +527,79 @@ const sevDot=l=>({error:'err',critical:'err',warn:'warn',warning:'warn',info:'ac
 
 /* ---- Connection ---- */
 const COUNTRIES=[['US','United States','1'],['CA','Canada','1'],['GB','United Kingdom','44'],['IN','India','91'],['PK','Pakistan','92'],['BD','Bangladesh','880'],['LK','Sri Lanka','94'],['NP','Nepal','977'],['AE','UAE','971'],['SA','Saudi Arabia','966'],['QA','Qatar','974'],['KW','Kuwait','965'],['OM','Oman','968'],['BH','Bahrain','973'],['SG','Singapore','65'],['MY','Malaysia','60'],['ID','Indonesia','62'],['PH','Philippines','63'],['TH','Thailand','66'],['VN','Vietnam','84'],['JP','Japan','81'],['KR','South Korea','82'],['CN','China','86'],['HK','Hong Kong','852'],['AU','Australia','61'],['NZ','New Zealand','64'],['ZA','South Africa','27'],['NG','Nigeria','234'],['KE','Kenya','254'],['EG','Egypt','20'],['TR','Türkiye','90'],['IR','Iran','98'],['IQ','Iraq','964'],['IL','Israel','972'],['RU','Russia','7'],['UA','Ukraine','380'],['DE','Germany','49'],['FR','France','33'],['ES','Spain','34'],['IT','Italy','39'],['NL','Netherlands','31'],['PT','Portugal','351'],['BR','Brazil','55'],['MX','Mexico','52'],['AR','Argentina','54'],['CO','Colombia','57'],['CL','Chile','56'],['PE','Peru','51']].sort((a,b)=>a[1].localeCompare(b[1]));
-views.connection=async root=>{
-  root.innerHTML=head('WhatsApp','Connection','Link the bot to a WhatsApp account using a QR code or a pairing code.')+`<div id="cx">${skel(5)}</div>`;
-  const cx=$('#cx'); let tab='qr', qr=null, pair=null, qrErr='', tick=null, pairing=false;
-  const region=(navigator.language||'').split('-')[1]||'';
-  let cc=(COUNTRIES.find(c=>c[0]===region.toUpperCase())||[])[2]||'';
-  let ccIso=(COUNTRIES.find(c=>c[0]===region.toUpperCase())||[])[0]||'';
-
-  async function loadQR(){
-    qrErr='';
+async function loadQR(){
+  qrErr='';
+  try{
+    const r=await api(EP.qr);
+    if(r instanceof Blob){ qr={image:URL.createObjectURL(r)}; }
+    else if(r&&typeof r==='object'){ qr={ code:r.qr||r.code||null, image:r.qr_image||r.image||null, expires:r.expires_at?Date.parse(r.expires_at):null, state:r.state||null }; if(!qr.code&&!qr.image) qr=null; }
+    else qr=null;
+  }catch(e){ qr=null; if(e.status!==404&&e.status!==204) qrErr=e.message; }
+}
+async function requestQR(btn){
+  await run(btn,async()=>{ await api(EP.qrRefresh,{method:'POST'}); },'Requested a fresh QR code');
+  setTimeout(loadQR,700);
+}
+function drawQR(){
+  const box=$('#qrbox'); if(!box||!qr) return;
+  if(qr.image){ box.innerHTML=`<img alt="WhatsApp pairing QR code" src="${esc(qr.image)}">`; return; }
+  if(typeof window.qrcode!=='function'&&MOCK){ box.innerHTML=mockQRSvg(qr.code); return; }
+  if(typeof window.qrcode!=='function'){ box.innerHTML='<div class="qr-wait">The QR renderer could not load (CDN blocked?). Reload the page or allow cdnjs.cloudflare.com.</div>'; return; }
+  try{ const q=window.qrcode(0,'M'); q.addData(qr.code); q.make(); box.innerHTML=q.createSvgTag(6,0); const sv=$('svg',box); sv.setAttribute('role','img'); sv.setAttribute('aria-label','WhatsApp pairing QR code'); }
+  catch{ box.innerHTML='<div class="qr-wait">Could not render this QR payload.</div>'; }
+}
+function qrPanel(el){
+  const b=el; const expired=qr&&qr.expires&&qr.expires<Date.now();
+  const box = qr
+    ? `<div class="qr-box" id="qrbox"></div>`
+    : `<div class="qr-box"><div class="qr-wait">${qrErr?esc(qrErr):'Waiting for the bot to generate a QR code…'}</div></div>`;
+  b.innerHTML=`<div class="card-h"><span>QR code</span></div>
+  <div style="position:relative">${box}${expired?`<div class="qr-over"><b>QR code expired</b><button class="btn sm" id="q-new" type="button">Get new QR</button></div>`:''}</div>
+  <ol class="steps"><li><span><b>Open WhatsApp</b> on your phone.</span></li><li><span>Go to <b>Settings → Linked devices</b> and tap <b>Link a device</b>.</span></li><li><span><b>Point your camera</b> at this QR code. The page updates automatically once linked.</span></li></ol>
+  <p class="mono muted" style="font-size:12px;margin:22px 0 0" id="q-cd"></p>
+  <div class="actions" style="margin-top:18px"><button class="btn ghost" id="q-ref" type="button">Refresh QR</button>${MOCK?'<button class="btn" id="q-sim" type="button">Simulate scan</button><span class="tag warn">Demo QR · not scannable</span>':''}</div>`;
+  drawQR();
+  $('#q-ref').onclick=e=>requestQR(e.target);
+  const qs=$('#q-sim'); if(qs) qs.onclick=e=>run(e.target,()=>api('/__mock/connect',{method:'POST'})); const n=$('#q-new'); if(n) n.onclick=e=>requestQR(e.target);
+}
+function pairPanel(el){
+  const b=el;
+  b.innerHTML=`<div class="card-h"><span>Phone number</span></div>
+  <form class="form" id="f-pair" novalidate>
+    <div class="field"><label for="p-num">WhatsApp phone number</label><div class="phone-row">
+      <select id="p-cc" aria-label="Country code"><option value="">Country</option>${COUNTRIES.map(c=>`<option value="${c[2]}" data-iso="${c[0]}" ${c[0]===ccIso?'selected':''}>${esc(c[1])} (+${c[2]})</option>`).join('')}</select>
+      <input id="p-num" type="tel" inputmode="numeric" autocomplete="tel-national" placeholder="Phone number" aria-describedby="p-h"></div>
+      <div class="hint" id="p-h">Enter the number without the country code. Never share a WhatsApp password or verification SMS. This flow only needs the phone number.</div></div>
+    <div class="err-t" id="p-e" role="alert"></div>
+    <div><button class="btn" type="submit" id="p-go" ${pairing?'disabled':''}>Get pairing code</button></div></form>
+  <div id="p-out"></div>`;
+  $('#p-cc').onchange=e=>{ cc=e.target.value; ccIso=e.target.selectedOptions[0].dataset.iso||''; };
+  paintPair(el);
+  $('#f-pair').onsubmit=async ev=>{
+    ev.preventDefault(); const err=$('#p-e');
+    let num=$('#p-num').value.replace(/\D/g,'').replace(/^0+/,'');
+    if(!cc){ err.textContent='Select your country.'; return; }
+    if(num.startsWith(cc)&&num.length>cc.length+6) num=num.slice(cc.length);
+    if(num.length<6||num.length>13){ err.textContent='Enter a valid phone number (6–13 digits, without the country code).'; return; }
+    err.textContent=''; pairing=true; $('#p-go').disabled=true; pair=null;
     try{
-      const r=await api(EP.qr);
-      if(r instanceof Blob){ qr={image:URL.createObjectURL(r)}; }
-      else if(r&&typeof r==='object'){ qr={ code:r.qr||r.code||null, image:r.qr_image||r.image||null, expires:r.expires_at?Date.parse(r.expires_at):null, state:r.state||null }; if(!qr.code&&!qr.image) qr=null; }
-      else qr=null;
-    }catch(e){ qr=null; if(e.status!==404&&e.status!==204) qrErr=e.message; }
-    render();
-  }
-  async function requestQR(btn){
-    await run(btn,async()=>{ await api(EP.qrRefresh,{method:'POST'}); },'Requested a fresh QR code');
-    setTimeout(loadQR,700);
-  }
-  function drawQR(){
-    const box=$('#qrbox'); if(!box||!qr) return;
-    if(qr.image){ box.innerHTML=`<img alt="WhatsApp pairing QR code" src="${esc(qr.image)}">`; return; }
-    if(typeof window.qrcode!=='function'&&MOCK){ box.innerHTML=mockQRSvg(qr.code); return; }
-    if(typeof window.qrcode!=='function'){ box.innerHTML='<div class="qr-wait">The QR renderer could not load (CDN blocked?). Reload the page or allow cdnjs.cloudflare.com.</div>'; return; }
-    try{ const q=window.qrcode(0,'M'); q.addData(qr.code); q.make(); box.innerHTML=q.createSvgTag(6,0); const sv=$('svg',box); sv.setAttribute('role','img'); sv.setAttribute('aria-label','WhatsApp pairing QR code'); }
-    catch{ box.innerHTML='<div class="qr-wait">Could not render this QR payload.</div>'; }
-  }
+      const r=await api(EP.pair,{method:'POST',body:{country_code:cc,phone_number:num}});
+      const code=r&&(r.pairing_code||r.code); if(!code) throw new ApiError('The backend did not return a pairing code.',502);
+      pair={code:String(code),phone:`+${cc}${num}`,expires:r.expires_at?Date.parse(r.expires_at):null};
+    }catch(e){ err.textContent=e.message; }
+    pairing=false; const go=$('#p-go'); if(go) go.disabled=false; paintPair(el);
+  };
+}
+function paintPair(el){
+  const o=el?$('#p-out',el):$('#p-out'); if(!o) return;
+  if(!pair){ o.innerHTML=''; return; }
+  const c=pair.code.replace(/[^A-Za-z0-9]/g,''); const shown=c.length===8?c.slice(0,4)+'-'+c.slice(4):pair.code;
+  o.innerHTML=`<div class="eyebrow" style="margin-bottom:10px">Pairing code for ${esc(pair.phone)}</div><div class="code">${esc(shown)}</div>
+  <p class="mono muted" style="font-size:12px;margin:12px 0 22px" id="p-cd"></p>
+  <ol class="steps"><li><span>Open <b>WhatsApp</b> on the phone with this number.</span></li><li><span>Go to <b>Settings → Linked devices → Link a device</b>.</span></li><li><span>Tap <b>Link with phone number instead</b> and enter the code above.</span></li></ol>${MOCK?'<div class="actions" style="margin-top:22px"><button class="btn" id="p-sim" type="button">Simulate entering code</button><span class="tag warn">Demo</span></div>':''}`;
+  const ps=$('#p-sim'); if(ps) ps.onclick=e=>run(e.target,()=>api('/__mock/connect',{method:'POST'}));
+}
+views.connection=async root=>{
   function connectedView(s){
     const a=s.account||{};
     cx.innerHTML=`<div class="banner ok"><span class="dot ok"></span><b>Connected to WhatsApp</b></div>
@@ -574,64 +622,13 @@ views.connection=async root=>{
     qrPanel($('#cx-qr'));
     pairPanel($('#cx-pair'));
   }
-  function qrPanel(el){
-    const b=el; const expired=qr&&qr.expires&&qr.expires<Date.now();
-    const box = qr
-      ? `<div class="qr-box" id="qrbox"></div>`
-      : `<div class="qr-box"><div class="qr-wait">${qrErr?esc(qrErr):'Waiting for the bot to generate a QR code…'}</div></div>`;
-    b.innerHTML=`<div class="card-h"><span>QR code</span></div>
-    <div style="position:relative">${box}${expired?`<div class="qr-over"><b>QR code expired</b><button class="btn sm" id="q-new" type="button">Get new QR</button></div>`:''}</div>
-    <ol class="steps"><li><span><b>Open WhatsApp</b> on your phone.</span></li><li><span>Go to <b>Settings → Linked devices</b> and tap <b>Link a device</b>.</span></li><li><span><b>Point your camera</b> at this QR code. The page updates automatically once linked.</span></li></ol>
-    <p class="mono muted" style="font-size:12px;margin:22px 0 0" id="q-cd"></p>
-    <div class="actions" style="margin-top:18px"><button class="btn ghost" id="q-ref" type="button">Refresh QR</button>${MOCK?'<button class="btn" id="q-sim" type="button">Simulate scan</button><span class="tag warn">Demo QR · not scannable</span>':''}</div>`;
-    drawQR();
-    $('#q-ref').onclick=e=>requestQR(e.target);
-    const qs=$('#q-sim'); if(qs) qs.onclick=e=>run(e.target,()=>api('/__mock/connect',{method:'POST'})); const n=$('#q-new'); if(n) n.onclick=e=>requestQR(e.target);
-  }
-  function pairPanel(el){
-    const b=el;
-    b.innerHTML=`<div class="card-h"><span>Phone number</span></div>
-    <form class="form" id="f-pair" novalidate>
-      <div class="field"><label for="p-num">WhatsApp phone number</label><div class="phone-row">
-        <select id="p-cc" aria-label="Country code"><option value="">Country</option>${COUNTRIES.map(c=>`<option value="${c[2]}" data-iso="${c[0]}" ${c[0]===ccIso?'selected':''}>${esc(c[1])} (+${c[2]})</option>`).join('')}</select>
-        <input id="p-num" type="tel" inputmode="numeric" autocomplete="tel-national" placeholder="Phone number" aria-describedby="p-h"></div>
-        <div class="hint" id="p-h">Enter the number without the country code. Never share a WhatsApp password or verification SMS. This flow only needs the phone number.</div></div>
-      <div class="err-t" id="p-e" role="alert"></div>
-      <div><button class="btn" type="submit" id="p-go" ${pairing?'disabled':''}>Get pairing code</button></div></form>
-    <div id="p-out"></div>`;
-    $('#p-cc').onchange=e=>{ cc=e.target.value; ccIso=e.target.selectedOptions[0].dataset.iso||''; };
-    paintPair($('#cx-pair'));
-    $('#f-pair').onsubmit=async ev=>{
-      ev.preventDefault(); const err=$('#p-e');
-      let num=$('#p-num').value.replace(/\D/g,'').replace(/^0+/,'');
-      if(!cc){ err.textContent='Select your country.'; return; }
-      if(num.startsWith(cc)&&num.length>cc.length+6) num=num.slice(cc.length);
-      if(num.length<6||num.length>13){ err.textContent='Enter a valid phone number (6–13 digits, without the country code).'; return; }
-      err.textContent=''; pairing=true; $('#p-go').disabled=true; pair=null;
-      try{
-        const r=await api(EP.pair,{method:'POST',body:{country_code:cc,phone_number:num}});
-        const code=r&&(r.pairing_code||r.code); if(!code) throw new ApiError('The backend did not return a pairing code.',502);
-        pair={code:String(code),phone:`+${cc}${num}`,expires:r.expires_at?Date.parse(r.expires_at):null};
-      }catch(e){ err.textContent=e.message; }
-      pairing=false; const go=$('#p-go'); if(go) go.disabled=false; paintPair($('#cx-pair'));
-    };
-  }
-  function paintPair(el){
-    const o=el?$('#p-out',el):$('#p-out'); if(!o) return;
-    if(!pair){ o.innerHTML=''; return; }
-    const c=pair.code.replace(/[^A-Za-z0-9]/g,''); const shown=c.length===8?c.slice(0,4)+'-'+c.slice(4):pair.code;
-    o.innerHTML=`<div class="eyebrow" style="margin-bottom:10px">Pairing code for ${esc(pair.phone)}</div><div class="code">${esc(shown)}</div>
-    <p class="mono muted" style="font-size:12px;margin:12px 0 22px" id="p-cd"></p>
-    <ol class="steps"><li><span>Open <b>WhatsApp</b> on the phone with this number.</span></li><li><span>Go to <b>Settings → Linked devices → Link a device</b>.</span></li><li><span>Tap <b>Link with phone number instead</b> and enter the code above.</span></li></ol>${MOCK?'<div class="actions" style="margin-top:22px"><button class="btn" id="p-sim" type="button">Simulate entering code</button><span class="tag warn">Demo</span></div>':''}`;
-    const ps=$('#p-sim'); if(ps) ps.onclick=e=>run(e.target,()=>api('/__mock/connect',{method:'POST'}));
-  }
   function render(){
     const s=state.status; if(!s){ cx.innerHTML=skel(5); return; }
     s.connected?connectedView(s):linkView(s);
   }
   function cd(){
     const ds=state.status; const d=$('#cx-dur'); if(d&&ds&&ds.connected) d.textContent=fmtDur(connectedSeconds(ds));
-    const q=$('#q-cd'); if(q&&qr&&qr.expires){ const left=Math.round((qr.expires-Date.now())/1000); q.textContent=left>0?`Code refreshes in ${left}s`:'Code expired'; if(left===0) qrPanel(); }
+    const q=$('#q-cd'); if(q&&qr&&qr.expires){ const left=Math.round((qr.expires-Date.now())/1000); q.textContent=left>0?`Code refreshes in ${left}s`:'Code expired'; if(left===0) qrPanel($('#cx-qr')); }
     const p=$('#p-cd'); if(p&&pair&&pair.expires){ const left=Math.round((pair.expires-Date.now())/1000); p.textContent=left>0?`Code expires in ${Math.floor(left/60)}:${String(left%60).padStart(2,'0')}`:'Code expired. Request a new one.'; }
   }
   let last=null;
@@ -640,8 +637,8 @@ views.connection=async root=>{
     if(s.connected&&was&&was!=='connected') toast('WhatsApp connected','ok');
     if(!s.connected&&s.state!=='pairing'&&tab==='qr'&&(was!==s.state||!qr)) loadQR(); else render();
   };
-  const off=[bus.on('status',onStatus),bus.on('qr',d=>{ qr=d&&(d.qr||d.code||d.qr_image)?{code:d.qr||d.code||null,image:d.qr_image||null,expires:d.expires_at?Date.parse(d.expires_at):null}:null; if(state.status&&!state.status.connected&&tab==='qr') qrPanel(); }),
-    bus.on('pairing',d=>{ if(d&&d.state==='failed'){ toast(d.error||'Pairing failed','err'); pair=null; paintPair(); } }),
+  const off=[bus.on('status',onStatus),bus.on('qr',d=>{ qr=d&&(d.qr||d.code||d.qr_image)?{code:d.qr||d.code||null,image:d.qr_image||null,expires:d.expires_at?Date.parse(d.expires_at):null}:null; if(state.status&&!state.status.connected&&tab==='qr') qrPanel($('#cx-qr')); }),
+    bus.on('pairing',d=>{ if(d&&d.state==='failed'){ toast(d.error||'Pairing failed','err'); pair=null; paintPair($('#cx-pair')); } }),
     bus.on('poll',()=>{ const s=state.status; if(s&&!s.connected&&tab==='qr') loadQR(); })];
   tick=setInterval(cd,1000);
   try{ await refreshStatus(); }catch(e){ errBox(cx,e,()=>views.connection(root)); return ()=>{ off.forEach(f=>f()); clearInterval(tick); }; }
