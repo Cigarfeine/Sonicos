@@ -50,7 +50,7 @@ func run() error {
 	}
 	defer sessionStore.Close()
 
-	var deduper idempotency.Idempotency
+	var deduper application.Idempotency
 	deduper, err = idempotency.New(ctx, cfg.RedisURL)
 	if err != nil {
 		logger.Warn("redis unavailable; using in-memory idempotency (moderation strikes disabled)", "error", err)
