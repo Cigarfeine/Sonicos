@@ -9,6 +9,7 @@ require (
 	github.com/redis/go-redis/v9 v9.24.0
 	go.mau.fi/whatsmeow v0.0.0-20261124172153-494ae5d707ac
 	google.golang.org/protobuf v1.36.12
+	rsc.io/qr v0.2.0
 )
 
 require (
@@ -36,5 +37,4 @@ require (
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/term v0.48.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
-	rsc.io/qr v0.2.0 // indirect
 )

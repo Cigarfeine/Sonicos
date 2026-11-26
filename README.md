@@ -13,7 +13,7 @@ A Go WhatsApp bot built with whatsmeow. It stores WhatsApp session credentials i
 - A WhatsApp account with linked devices enabled
 - Redis 7 or a compatible managed Redis service
 - `ffmpeg` and `ffprobe` in `PATH` (or `FFMPEG_PATH` set) for sticker and audio conversion
-- `DASHBOARD_PASSWORD` for web dashboard access (default: `36545280`, change before deploying)
+- `DASHBOARD_PASSWORD` (optional) — set an alphanumeric or numeric password to enable the web onboarding & management dashboard (leave empty on a local PC/VPS to run terminal-only QR pairing)
 
 ## Run locally
 
@@ -56,18 +56,24 @@ The runtime is split into explicit layers:
 
 Application processing is independent of whatsmeow protobuf types. WhatsApp-specific encoding and decoding stays at the transport adapter boundary, making command processing easier to test and extend.
 
-## Web Dashboard
+## Web Dashboard & Onboarding
 
-The bot includes a built-in web dashboard served at the same HTTP port as the bot (`PORT` env var, default `8080`). Open `http://localhost:8080` to access it.
+The bot includes an embedded web onboarding dashboard (`cmd/static/index.html`) served on `$PORT` (default `8080`) when `DASHBOARD_PASSWORD` is configured.
+
+- **PC / VPS (Terminal Mode)**: Leave `DASHBOARD_PASSWORD` empty in `.env`. No HTTP dashboard port is opened, and WhatsApp pairing uses the terminal QR code directly.
+- **Railway / Heroku (Web Onboarding)**: Set `DASHBOARD_PASSWORD` in your environment variables, open the generated app URL, sign in, and link WhatsApp using either the **QR Code** or **Phone Number Pairing Code**. Terminal QR remains active at the same time.
+- If `PORT` is set by a cloud host while `DASHBOARD_PASSWORD` is still empty, the dashboard stays locked (`503`) with a setup notice and exposes `/health` (`200`) so container health checks remain green.
 
 ### Dashboard login
 
-Authenticate with the password from `DASHBOARD_PASSWORD`. Change this before deploying:
+Set a strong alphanumeric or numeric password in `DASHBOARD_PASSWORD`:
 
 ```sh
 export DASHBOARD_PASSWORD=your-secure-password
 go run ./cmd/bot
 ```
+
+Then open `http://localhost:8080`.
 
 ### Dashboard features
 
@@ -121,14 +127,14 @@ All API endpoints require an authenticated session cookie (`sonicos_session`). S
 ### Security
 
 - Never expose `DASHBOARD_PASSWORD` or WhatsApp session credentials in the frontend
-- Session is stored in an HttpOnly cookie
-- All privileged endpoints require authentication
-- Configure CORS and HTTPS in cloud deployment
+- Sessions use random opaque server-side tokens stored in `HttpOnly`, `SameSite=Lax` cookies (with `Secure` automatically enabled over HTTPS/reverse proxies)
+- Login attempts are rate-limited per IP and all authentication, onboarding, and administrative actions emit tamper-evident SHA-256 hash-chained structured JSON audit logs
+- Same-origin CORS and origin verification are enforced by default (extend with `CORS_ALLOWED_ORIGINS` only if hosting the UI separately)
 - Do not store secrets in browser localStorage
 
 ## Deploy to Railway
 
-The Railway configuration builds the root [Dockerfile](Dockerfile) and restarts the worker after failures. Railway is the recommended host because its persistent volumes can preserve the SQLite WhatsApp session.
+The Railway configuration builds the root [Dockerfile](Dockerfile) and restarts the service after failures. Railway is the recommended host because its persistent volumes can preserve the SQLite WhatsApp session.
 
 The Docker image pre-installs all runtime dependencies:
 - `ffmpeg` — sticker/audio conversion and TTS waveform encoding
@@ -138,7 +144,7 @@ The Docker image pre-installs all runtime dependencies:
 2. Select **Deploy on Railway** and connect the repository.
 3. Add a Redis service (Railway managed Redis or any Redis-compatible endpoint). Set the bot's `REDIS_URL` to that service's connection URL. Redis is used for command idempotency and moderation strike tracking; if Redis is unavailable, the bot falls back to in-memory idempotency and starts anyway, but moderation strikes won't persist across restarts.
 4. Add a persistent volume to the bot service and set its mount path to `/app/data` so the SQLite WhatsApp session survives redeploys.
-5. Set `DASHBOARD_PASSWORD` to a strong value (default `36545280` is insecure).
-6. Deploy. Open the bot service logs and scan the QR code it prints.
+5. Set `DASHBOARD_PASSWORD` to a strong alphanumeric or numeric value.
+6. Deploy, open the generated Railway domain URL, sign in with `DASHBOARD_PASSWORD`, and link WhatsApp via QR scan or phone number pairing.
 
 The bot uses SQLite at `./data/sonicos.db`, which resolves to `/app/data/sonicos.db` in the container. Do not run multiple bot replicas against the same SQLite file or WhatsApp session; keep the worker count at one instance.

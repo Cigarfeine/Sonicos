@@ -37,4 +37,6 @@ ENV QUEUE_SIZE=512
 ENV LOG_LEVEL=info
 ENV FFMPEG_PATH=ffmpeg
 
+EXPOSE 8080
+
 CMD ["/app/sonicos"]

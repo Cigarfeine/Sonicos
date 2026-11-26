@@ -12,7 +12,10 @@ import (
 )
 
 func ShouldIgnoreMessage(evt *events.Message) bool {
-	return evt == nil || evt.Info.Chat.IsBroadcastList()
+	return evt == nil ||
+		evt.Info.Chat.IsBroadcastList() ||
+		evt.SourceWebMsg != nil ||
+		evt.UnavailableRequestID != ""
 }
 
 func DecodeMessage(client *whatsmeow.Client, evt *events.Message) (command.Message, bool) {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/SafwanGanz/Sonicos/internal/api"
 	"github.com/SafwanGanz/Sonicos/internal/application"
+	"github.com/SafwanGanz/Sonicos/internal/audit"
 	"github.com/SafwanGanz/Sonicos/internal/command"
 	"github.com/SafwanGanz/Sonicos/internal/config"
 	"github.com/SafwanGanz/Sonicos/internal/idempotency"
@@ -35,6 +36,8 @@ func run() error {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel(cfg.LogLevel)}))
 	slog.SetDefault(logger)
+
+	auditLog := audit.New(logger, 1000)
 
 	registry, err := command.Default()
 	if err != nil {
@@ -73,32 +76,46 @@ func run() error {
 	}
 	bot.SetModerationStore(modStore)
 
-	// Create API server
-	apiServer := api.NewServer(bot, registry, modStore, logger)
-
-	// Start HTTP server in background
-	apiPort := os.Getenv("PORT")
-	if apiPort == "" {
-		apiPort = "8080"
-	}
-
-	srv := &http.Server{
-		Addr:    ":" + apiPort,
-		Handler: apiServer.Handler(),
-	}
-
-	go func() {
-		logger.Info("HTTP server starting", "port", apiPort)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("HTTP server failed", "error", err)
+	var srv *http.Server
+	switch {
+	case cfg.DashboardPassword != "":
+		apiServer := api.NewServer(bot, registry, modStore, auditLog, cfg.DashboardPassword, cfg.CORSAllowedOrigins, logger)
+		bot.SetEventListener(apiServer.HandleBotEvent)
+		srv = &http.Server{
+			Addr:              ":" + cfg.Port,
+			Handler:           apiServer.Handler(),
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
 		}
-	}()
+		auditLog.Record("system", "info", "system", "web-dashboard", "dashboard_started", "success", "", "web onboarding dashboard enabled", map[string]any{"port": cfg.Port})
+	case cfg.PortExplicit:
+		logger.Warn("web dashboard disabled (DASHBOARD_PASSWORD not set); binding PORT with locked health server for cloud runtime", "port", cfg.Port)
+		auditLog.Record("system", "warning", "system", "web-dashboard", "dashboard_disabled_cloud_port", "success", "", "DASHBOARD_PASSWORD empty; locked health endpoint bound on PORT", map[string]any{"port": cfg.Port})
+		srv = &http.Server{
+			Addr:              ":" + cfg.Port,
+			Handler:           api.NewDisabledHandler(auditLog),
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+	default:
+		logger.Info("web dashboard disabled (DASHBOARD_PASSWORD not set); terminal pairing active")
+		auditLog.Record("system", "info", "system", "web-dashboard", "dashboard_disabled", "success", "", "web dashboard disabled; terminal pairing mode active", nil)
+	}
 
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-	}()
+	if srv != nil {
+		go func() {
+			logger.Info("HTTP server starting", "port", cfg.Port)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("HTTP server failed", "error", err)
+			}
+		}()
+
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(shutdownCtx)
+		}()
+	}
 
 	logger.Info("starting WhatsApp bot", "workers", cfg.Workers, "queue_size", cfg.QueueSize, "prefix", cfg.Prefix)
 	return bot.Run(ctx)

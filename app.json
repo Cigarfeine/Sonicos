@@ -1,6 +1,6 @@
 {
   "name": "Sonicos WhatsApp Bot",
-  "description": "A Go WhatsApp bot built with whatsmeow, SQLite, and Redis.",
+  "description": "A Go WhatsApp bot built with whatsmeow, SQLite, Redis, and a password-protected web onboarding dashboard.",
   "repository": "https://github.com/SafwanGanz/Sonicos",
   "keywords": ["go", "whatsapp", "whatsmeow", "sqlite", "redis"],
   "stack": "container",
@@ -15,6 +15,10 @@
     },
     "REDIS_URL": {
       "description": "Redis connection URL. Use a managed Redis-compatible service.",
+      "required": true
+    },
+    "DASHBOARD_PASSWORD": {
+      "description": "Password (alphanumeric or numeric) required to unlock the web onboarding dashboard for QR or phone-number WhatsApp linking.",
       "required": true
     },
     "BOT_PREFIX": {
@@ -35,7 +39,7 @@
     }
   },
   "formation": {
-    "worker": {
+    "web": {
       "quantity": 1,
       "size": "basic"
     }

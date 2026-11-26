@@ -144,7 +144,7 @@ td.r,th.r{text-align:right}
 .offline button{background:none;border:0;color:#fff;text-decoration:underline;cursor:pointer;font:inherit;padding:0}
 
 /* connection */
-.link-grid{display:grid;grid-template-columns:minmax(260px,340px) 1fr;gap:32px;align-items:start}
+.link-grid{display:grid;grid-template-columns:minmax(240px,320px) minmax(0,1fr);gap:24px;align-items:start}
 .qr-box{position:relative;background:#fff;padding:16px;aspect-ratio:1;display:grid;place-items:center;color:#111}
 .qr-box::before,.qr-box::after{content:"";position:absolute;width:22px;height:22px;border:2px solid var(--accent)}
 .qr-box::before{top:-6px;left:-6px;border-right:0;border-bottom:0}
@@ -158,7 +158,8 @@ td.r,th.r{text-align:right}
 .steps li::before{content:counter(s,decimal-leading-zero);font-family:var(--mono);font-size:12px;color:var(--accent);padding-top:2px}
 .steps li b{color:var(--text);font-weight:500}
 .code{font-family:var(--mono);font-weight:500;font-size:clamp(30px,6vw,46px);letter-spacing:.14em;color:var(--accent);background:#0b0b0b;border:1px solid var(--line2);padding:18px 22px;display:inline-block;user-select:all}
-.phone-row{display:grid;grid-template-columns:minmax(150px,190px) 1fr;gap:10px}
+.phone-row{display:grid;grid-template-columns:minmax(140px,180px) minmax(0,1fr);gap:10px}
+.phone-row>*{min-width:0}
 
 /* dialogs & toasts */
 dialog{background:var(--panel);color:var(--text);border:1px solid var(--line2);padding:0;width:min(560px,92vw);max-height:88vh;overflow:auto}
@@ -175,11 +176,15 @@ dialog::backdrop{background:rgba(0,0,0,.72)}
 /* auth/setup */
 .screen{min-height:100vh;display:grid;place-items:center;padding:24px}
 .auth{width:min(440px,100%)}
+.auth.wide{width:min(960px,100%)}
 .auth h1{font-weight:300;font-size:clamp(36px,8vw,52px);letter-spacing:-.035em;line-height:1.02;margin:18px 0 12px}
 .auth p{color:var(--muted);margin:0 0 28px}
 .auth .form{max-width:none}
 .err-t{color:var(--err);font-size:14px;min-height:1.3em}
 
+@media(max-width:1180px){
+  .main .link-grid{grid-template-columns:1fr}
+}
 @media(max-width:900px){
   .app{grid-template-columns:1fr}
   .side{position:sticky;top:0;height:auto;flex-direction:column;padding:12px 16px;z-index:40;border-right:0;border-bottom:1px solid var(--line)}
@@ -322,8 +327,9 @@ async function run(btn,fn,okMsg){
 }
 
 /* ---------- state + API ---------- */
+const COUNTRIES=[['US','United States','1'],['CA','Canada','1'],['GB','United Kingdom','44'],['IN','India','91'],['PK','Pakistan','92'],['BD','Bangladesh','880'],['LK','Sri Lanka','94'],['NP','Nepal','977'],['AE','UAE','971'],['SA','Saudi Arabia','966'],['QA','Qatar','974'],['KW','Kuwait','965'],['OM','Oman','968'],['BH','Bahrain','973'],['SG','Singapore','65'],['MY','Malaysia','60'],['ID','Indonesia','62'],['PH','Philippines','63'],['TH','Thailand','66'],['VN','Vietnam','84'],['JP','Japan','81'],['KR','South Korea','82'],['CN','China','86'],['HK','Hong Kong','852'],['AU','Australia','61'],['NZ','New Zealand','64'],['ZA','South Africa','27'],['NG','Nigeria','234'],['KE','Kenya','254'],['EG','Egypt','20'],['TR','Türkiye','90'],['IR','Iran','98'],['IQ','Iraq','964'],['IL','Israel','972'],['RU','Russia','7'],['UA','Ukraine','380'],['DE','Germany','49'],['FR','France','33'],['ES','Spain','34'],['IT','Italy','39'],['NL','Netherlands','31'],['PT','Portugal','351'],['BR','Brazil','55'],['MX','Mexico','52'],['AR','Argentina','54'],['CO','Colombia','57'],['CL','Chile','56'],['PE','Peru','51']].sort((a,b)=>a[1].localeCompare(b[1]));
 const state = { base:'', status:null, statusAt:0, live:'off', es:null, poll:null, onboarded:false };
-let qr=null, pair=null, pairing=false, qrErr='', cc='', ccIso='';
+let qr=null, pair=null, pairing=false, qrErr='', cc='', ccIso='', screenCleanup=null, cleanup=null;
 const _rn=(navigator.language||'').split('-')[1]||'';
 cc=(COUNTRIES.find(c=>c[0]===_rn.toUpperCase())||[])[2]||'';
 ccIso=(COUNTRIES.find(c=>c[0]===_rn.toUpperCase())||[])[0]||'';
@@ -411,7 +417,15 @@ function startLive(){
 function stopLive(){ if(state.es){ state.es.close(); state.es=null; } stopPolling(); if(MOCK) mockStopSim(); setLive('off'); }
 
 /* ---------- screens: setup / login ---------- */
-function showScreen(html){ $('#app').hidden=true; const s=$('#screen'); s.hidden=false; s.innerHTML=`<div class="auth">${html}</div>`; return s; }
+function clearScreenCleanup(){ if(screenCleanup){ try{screenCleanup()}catch{} screenCleanup=null; } }
+function showScreen(html,wide=false){
+  clearScreenCleanup();
+  if(cleanup){ try{cleanup()}catch{} cleanup=null; }
+  $('#app').hidden=true;
+  const v=$('#view'); if(v) v.innerHTML='';
+  const s=$('#screen'); s.hidden=false; s.innerHTML=`<div class="auth${wide?' wide':''}">${html}</div>`;
+  return s;
+}
 function showSetup(msg=''){
   stopLive();
   const s=showScreen(`<div class="logo"><i></i>SONICOS</div><h1>Connect to your bot.</h1><p>Enter the public URL of your Go bot backend (for example your Railway domain). Only the URL is saved in this browser. No passwords or tokens are stored.</p>
@@ -442,7 +456,8 @@ function onUnauthorized(){ if(!$('#app').hidden) showLogin('Your session expired
 
 function showOnboard(){
   stopLive();
-  const s=showScreen(`<div class="logo"><i></i>SONICOS</div><h1>Connect WhatsApp.</h1><p>Link your bot to a WhatsApp account before using the dashboard. You can skip this and connect later from the Connection page.</p>
+  const s=showScreen(`<div class="logo"><i></i>SONICOS</div><h1>Connect WhatsApp.</h1><p>Link your bot to a WhatsApp account via QR code scan or phone number pairing. You can also skip this and connect later from the Connection page.</p>
+  <div class="banner warn" id="onb-banner"><span class="dot warn"></span><span>Waiting for WhatsApp pairing…</span></div>
   <div class="link-grid" id="onb-grid">
     <div class="card link-card" id="onb-qr"></div>
     <div class="card link-card" id="onb-pair"></div>
@@ -450,17 +465,52 @@ function showOnboard(){
   <div style="margin-top:24px;display:flex;justify-content:flex-end;gap:10px">
     <button class="btn ghost" id="onb-skip" type="button">Skip for now</button>
   </div>
-  <p class="eyebrow" style="margin:24px 0 0;word-break:break-all">${esc(state.base)}</p>`);
-  qrPanel($('#onb-qr'));
-  pairPanel($('#onb-pair'));
-  $('#onb-skip').onclick=()=>{ state.onboarded=true; try{ localStorage.setItem('sonicos.onboarded','1'); }catch{} showApp(); };
+  <p class="eyebrow" style="margin:24px 0 0;word-break:break-all">${esc(state.base)}</p>`,true);
+  const paintBanner=st=>{
+    const b=$('#onb-banner',s); if(!b||!st) return;
+    const msgs={connected:['ok','Connected to WhatsApp! Entering dashboard…'],connecting:['warn','Connecting to WhatsApp…'],qr:['warn','Scan the QR code with WhatsApp Linked Devices.'],pairing:['warn','Enter the pairing code on your phone to complete linking.'],waiting:['warn','Preparing WhatsApp pairing session…'],disconnected:['warn','Waiting for QR code or pairing code…'],error:['err','Pairing error. Click Refresh QR or try phone pairing.']};
+    const [cls,msg]=msgs[st.state]||msgs.waiting;
+    b.className='banner '+cls;
+    b.innerHTML=`<span class="dot ${cls}"></span><span>${esc(msg)}</span>`;
+  };
+  const tick=setInterval(()=>{
+    const q=$('#q-cd',s); if(q&&qr&&qr.expires){ const left=Math.round((qr.expires-Date.now())/1000); q.textContent=left>0?`Code refreshes in ${left}s`:'Code expired'; }
+    const p=$('#p-cd',s); if(p&&pair&&pair.expires){ const left=Math.round((pair.expires-Date.now())/1000); p.textContent=left>0?`Code expires in ${Math.floor(left/60)}:${String(left%60).padStart(2,'0')}`:'Code expired. Request a new one.'; }
+  },1000);
+  const off=[
+    bus.on('status',st=>{
+      paintBanner(st);
+      if(st&&st.connected){
+        state.onboarded=true; try{ localStorage.setItem('sonicos.onboarded','1'); }catch{}
+        toast('WhatsApp connected','ok');
+        showApp();
+      }
+    }),
+    bus.on('qr',d=>{
+      qr=d&&(d.qr||d.code||d.qr_image)?{code:d.qr||d.code||null,image:d.qr_image||null,expires:d.expires_at?Date.parse(d.expires_at):null,state:d.state||null}:null;
+      qrErr=d&&d.error?d.error:'';
+      const el=$('#onb-qr',s); if(el) qrPanel(el);
+    }),
+    bus.on('pairing',d=>{
+      if(d&&d.state==='failed'){ toast(d.error||'Pairing failed','err'); pair=null; paintPair($('#onb-pair',s)); }
+    }),
+    bus.on('poll',()=>{ if(!state.status||!state.status.connected) loadQR(); })
+  ];
+  screenCleanup=()=>{ off.forEach(f=>f()); clearInterval(tick); };
+  qrPanel($('#onb-qr',s));
+  pairPanel($('#onb-pair',s));
+  if(state.status) paintBanner(state.status);
+  startLive();
+  loadQR();
+  $('#onb-skip',s).onclick=()=>{ state.onboarded=true; try{ localStorage.setItem('sonicos.onboarded','1'); }catch{} showApp(); };
 }
 
 /* ---------- shell + router ---------- */
 const NAV=[['overview','Overview'],['connection','Connection'],['settings','Settings'],['commands','Commands'],['groups','Groups'],['moderation','Moderation'],['users','Users'],['logs','Activity']];
-let cleanup=null;
 function showApp(){
-  $('#screen').hidden=true; $('#app').hidden=false;
+  clearScreenCleanup();
+  const sc=$('#screen'); sc.hidden=true; sc.innerHTML='';
+  $('#app').hidden=false;
   $('#nav').innerHTML=NAV.map(([k,l])=>`<a href="#${k}" data-k="${k}">${ico(k==='logs'?'logs':k)}<span>${l}</span></a>`).join('');
   $('#api-host').textContent=MOCK?'DEMO MODE · generated data':state.base.replace(/^https?:\/\//,'');
   startLive(); route();
@@ -526,22 +576,27 @@ views.overview=async root=>{
 const sevDot=l=>({error:'err',critical:'err',warn:'warn',warning:'warn',info:'acc'}[String(l).toLowerCase()]||'');
 
 /* ---- Connection ---- */
-const COUNTRIES=[['US','United States','1'],['CA','Canada','1'],['GB','United Kingdom','44'],['IN','India','91'],['PK','Pakistan','92'],['BD','Bangladesh','880'],['LK','Sri Lanka','94'],['NP','Nepal','977'],['AE','UAE','971'],['SA','Saudi Arabia','966'],['QA','Qatar','974'],['KW','Kuwait','965'],['OM','Oman','968'],['BH','Bahrain','973'],['SG','Singapore','65'],['MY','Malaysia','60'],['ID','Indonesia','62'],['PH','Philippines','63'],['TH','Thailand','66'],['VN','Vietnam','84'],['JP','Japan','81'],['KR','South Korea','82'],['CN','China','86'],['HK','Hong Kong','852'],['AU','Australia','61'],['NZ','New Zealand','64'],['ZA','South Africa','27'],['NG','Nigeria','234'],['KE','Kenya','254'],['EG','Egypt','20'],['TR','Türkiye','90'],['IR','Iran','98'],['IQ','Iraq','964'],['IL','Israel','972'],['RU','Russia','7'],['UA','Ukraine','380'],['DE','Germany','49'],['FR','France','33'],['ES','Spain','34'],['IT','Italy','39'],['NL','Netherlands','31'],['PT','Portugal','351'],['BR','Brazil','55'],['MX','Mexico','52'],['AR','Argentina','54'],['CO','Colombia','57'],['CL','Chile','56'],['PE','Peru','51']].sort((a,b)=>a[1].localeCompare(b[1]));
+function activeQRHost(){ return $('#onb-qr')||$('#cx-qr'); }
 async function loadQR(){
   qrErr='';
   try{
     const r=await api(EP.qr);
     if(r instanceof Blob){ qr={image:URL.createObjectURL(r)}; }
-    else if(r&&typeof r==='object'){ qr={ code:r.qr||r.code||null, image:r.qr_image||r.image||null, expires:r.expires_at?Date.parse(r.expires_at):null, state:r.state||null }; if(!qr.code&&!qr.image) qr=null; }
+    else if(r&&typeof r==='object'){
+      qr={ code:r.qr||r.code||null, image:r.qr_image||r.image||null, expires:r.expires_at?Date.parse(r.expires_at):null, state:r.state||null };
+      if(!qr.code&&!qr.image) qr=null;
+      if(r.error) qrErr=r.error;
+    }
     else qr=null;
   }catch(e){ qr=null; if(e.status!==404&&e.status!==204) qrErr=e.message; }
+  const host=activeQRHost(); if(host) qrPanel(host);
 }
 async function requestQR(btn){
   await run(btn,async()=>{ await api(EP.qrRefresh,{method:'POST'}); },'Requested a fresh QR code');
-  setTimeout(loadQR,700);
+  setTimeout(async()=>{ await loadQR(); if(!qr) setTimeout(loadQR,900); },500);
 }
-function drawQR(){
-  const box=$('#qrbox'); if(!box||!qr) return;
+function drawQR(el){
+  const box=el?$('#qrbox',el):$('#qrbox'); if(!box||!qr) return;
   if(qr.image){ box.innerHTML=`<img alt="WhatsApp pairing QR code" src="${esc(qr.image)}">`; return; }
   if(typeof window.qrcode!=='function'&&MOCK){ box.innerHTML=mockQRSvg(qr.code); return; }
   if(typeof window.qrcode!=='function'){ box.innerHTML='<div class="qr-wait">The QR renderer could not load (CDN blocked?). Reload the page or allow cdnjs.cloudflare.com.</div>'; return; }
@@ -558,9 +613,9 @@ function qrPanel(el){
   <ol class="steps"><li><span><b>Open WhatsApp</b> on your phone.</span></li><li><span>Go to <b>Settings → Linked devices</b> and tap <b>Link a device</b>.</span></li><li><span><b>Point your camera</b> at this QR code. The page updates automatically once linked.</span></li></ol>
   <p class="mono muted" style="font-size:12px;margin:22px 0 0" id="q-cd"></p>
   <div class="actions" style="margin-top:18px"><button class="btn ghost" id="q-ref" type="button">Refresh QR</button>${MOCK?'<button class="btn" id="q-sim" type="button">Simulate scan</button><span class="tag warn">Demo QR · not scannable</span>':''}</div>`;
-  drawQR();
-  $('#q-ref').onclick=e=>requestQR(e.target);
-  const qs=$('#q-sim'); if(qs) qs.onclick=e=>run(e.target,()=>api('/__mock/connect',{method:'POST'})); const n=$('#q-new'); if(n) n.onclick=e=>requestQR(e.target);
+  drawQR(b);
+  $('#q-ref',b).onclick=e=>requestQR(e.target);
+  const qs=$('#q-sim',b); if(qs) qs.onclick=e=>run(e.target,()=>api('/__mock/connect',{method:'POST'})); const n=$('#q-new',b); if(n) n.onclick=e=>requestQR(e.target);
 }
 function pairPanel(el){
   const b=el;
@@ -573,21 +628,21 @@ function pairPanel(el){
     <div class="err-t" id="p-e" role="alert"></div>
     <div><button class="btn" type="submit" id="p-go" ${pairing?'disabled':''}>Get pairing code</button></div></form>
   <div id="p-out"></div>`;
-  $('#p-cc').onchange=e=>{ cc=e.target.value; ccIso=e.target.selectedOptions[0].dataset.iso||''; };
-  paintPair(el);
-  $('#f-pair').onsubmit=async ev=>{
-    ev.preventDefault(); const err=$('#p-e');
-    let num=$('#p-num').value.replace(/\D/g,'').replace(/^0+/,'');
+  $('#p-cc',b).onchange=e=>{ cc=e.target.value; ccIso=e.target.selectedOptions[0].dataset.iso||''; };
+  paintPair(b);
+  $('#f-pair',b).onsubmit=async ev=>{
+    ev.preventDefault(); const err=$('#p-e',b);
+    let num=$('#p-num',b).value.replace(/\D/g,'').replace(/^0+/,'');
     if(!cc){ err.textContent='Select your country.'; return; }
     if(num.startsWith(cc)&&num.length>cc.length+6) num=num.slice(cc.length);
     if(num.length<6||num.length>13){ err.textContent='Enter a valid phone number (6–13 digits, without the country code).'; return; }
-    err.textContent=''; pairing=true; $('#p-go').disabled=true; pair=null;
+    err.textContent=''; pairing=true; $('#p-go',b).disabled=true; pair=null;
     try{
       const r=await api(EP.pair,{method:'POST',body:{country_code:cc,phone_number:num}});
       const code=r&&(r.pairing_code||r.code); if(!code) throw new ApiError('The backend did not return a pairing code.',502);
       pair={code:String(code),phone:`+${cc}${num}`,expires:r.expires_at?Date.parse(r.expires_at):null};
     }catch(e){ err.textContent=e.message; }
-    pairing=false; const go=$('#p-go'); if(go) go.disabled=false; paintPair(el);
+    pairing=false; const go=$('#p-go',b); if(go) go.disabled=false; paintPair(b);
   };
 }
 function paintPair(el){
@@ -600,6 +655,8 @@ function paintPair(el){
   const ps=$('#p-sim'); if(ps) ps.onclick=e=>run(e.target,()=>api('/__mock/connect',{method:'POST'}));
 }
 views.connection=async root=>{
+  root.innerHTML=head('WhatsApp','Connection','Link your WhatsApp account via QR code scan or phone number pairing.')+`<div id="cx">${skel(5)}</div>`;
+  const cx=$('#cx'); let tick;
   function connectedView(s){
     const a=s.account||{};
     cx.innerHTML=`<div class="banner ok"><span class="dot ok"></span><b>Connected to WhatsApp</b></div>
@@ -609,10 +666,10 @@ views.connection=async root=>{
     <p class="muted" style="font-size:13px;margin:18px 0 0"><b style="color:var(--text);font-weight:500">Disconnect</b> stops the bot but keeps the session so it can reconnect. <b style="color:var(--text);font-weight:500">Unlink</b> removes the session; you will need to scan a new QR or enter a new pairing code.</p></div>`;
     $('#b-rec').onclick=e=>run(e.target,async()=>{ await api(EP.reconnect,{method:'POST'}); refreshStatus().catch(()=>{}); },'Reconnecting…');
     $('#b-dis').onclick=async e=>{ if(await confirmDialog({title:'Disconnect the bot?',body:'The bot will stop responding until it is reconnected. Your linked session is kept.',confirmText:'Disconnect'})) run(e.target,async()=>{ await api(EP.disconnect,{method:'POST'}); await refreshStatus(); },'Disconnected'); };
-    $('#b-unl').onclick=async e=>{ if(await confirmDialog({title:'Unlink this WhatsApp account?',body:'This deletes the bot’s session. To use the bot again you must pair a WhatsApp account from scratch.',confirmText:'Unlink',danger:true})) run(e.target,async()=>{ await api(EP.unlink,{method:'POST'}); qr=null; pair=null; await refreshStatus(); },'Account unlinked'); };
+    $('#b-unl').onclick=async e=>{ if(await confirmDialog({title:'Unlink this WhatsApp account?',body:'This deletes the bot’s session. To use the bot again you must pair a WhatsApp account from scratch.',confirmText:'Unlink',danger:true})) run(e.target,async()=>{ await api(EP.unlink,{method:'POST'}); qr=null; pair=null; await refreshStatus(); await loadQR(); },'Account unlinked'); };
   }
   function linkView(s){
-    const msgs={connecting:['warn','Connecting to WhatsApp…'],qr:['warn','Waiting for you to scan the QR code.'],pairing:['warn','Waiting for you to enter the pairing code on your phone.'],disconnected:['err','Not linked. Choose a method below to connect.']};
+    const msgs={connecting:['warn','Connecting to WhatsApp…'],waiting:['warn','Preparing WhatsApp pairing session…'],qr:['warn','Waiting for you to scan the QR code.'],pairing:['warn','Waiting for you to enter the pairing code on your phone.'],error:['err','Pairing error. Refresh QR or try phone pairing.'],disconnected:['err','Not linked. Choose a method below to connect.']};
     const [c,m]=msgs[s.state]||msgs.disconnected;
     cx.innerHTML=`<div class="banner ${c}"><span class="dot ${c}"></span><span>${esc(m)}</span></div>
     <div class="link-grid" id="cx-grid">
@@ -628,21 +685,22 @@ views.connection=async root=>{
   }
   function cd(){
     const ds=state.status; const d=$('#cx-dur'); if(d&&ds&&ds.connected) d.textContent=fmtDur(connectedSeconds(ds));
-    const q=$('#q-cd'); if(q&&qr&&qr.expires){ const left=Math.round((qr.expires-Date.now())/1000); q.textContent=left>0?`Code refreshes in ${left}s`:'Code expired'; if(left===0) qrPanel($('#cx-qr')); }
+    const q=$('#q-cd'); if(q&&qr&&qr.expires){ const left=Math.round((qr.expires-Date.now())/1000); q.textContent=left>0?`Code refreshes in ${left}s`:'Code expired'; if(left===0&&$('#cx-qr')) qrPanel($('#cx-qr')); }
     const p=$('#p-cd'); if(p&&pair&&pair.expires){ const left=Math.round((pair.expires-Date.now())/1000); p.textContent=left>0?`Code expires in ${Math.floor(left/60)}:${String(left%60).padStart(2,'0')}`:'Code expired. Request a new one.'; }
   }
   let last=null;
   const onStatus=s=>{
     const was=last; last=s.state; if(!$('#cx')) return;
     if(s.connected&&was&&was!=='connected') toast('WhatsApp connected','ok');
-    if(!s.connected&&s.state!=='pairing'&&tab==='qr'&&(was!==s.state||!qr)) loadQR(); else render();
+    render();
+    if(!s.connected&&s.state!=='pairing'&&(was!==s.state||!qr)) loadQR();
   };
-  const off=[bus.on('status',onStatus),bus.on('qr',d=>{ qr=d&&(d.qr||d.code||d.qr_image)?{code:d.qr||d.code||null,image:d.qr_image||null,expires:d.expires_at?Date.parse(d.expires_at):null}:null; if(state.status&&!state.status.connected&&tab==='qr') qrPanel($('#cx-qr')); }),
+  const off=[bus.on('status',onStatus),bus.on('qr',d=>{ qr=d&&(d.qr||d.code||d.qr_image)?{code:d.qr||d.code||null,image:d.qr_image||null,expires:d.expires_at?Date.parse(d.expires_at):null,state:d.state||null}:null; qrErr=d&&d.error?d.error:''; if(state.status&&!state.status.connected&&$('#cx-qr')) qrPanel($('#cx-qr')); }),
     bus.on('pairing',d=>{ if(d&&d.state==='failed'){ toast(d.error||'Pairing failed','err'); pair=null; paintPair($('#cx-pair')); } }),
-    bus.on('poll',()=>{ const s=state.status; if(s&&!s.connected&&tab==='qr') loadQR(); })];
+    bus.on('poll',()=>{ const s=state.status; if(s&&!s.connected) loadQR(); })];
   tick=setInterval(cd,1000);
   try{ await refreshStatus(); }catch(e){ errBox(cx,e,()=>views.connection(root)); return ()=>{ off.forEach(f=>f()); clearInterval(tick); }; }
-  last=state.status.state; if(!state.status.connected) await loadQR(); else render();
+  last=state.status.state; render(); if(!state.status.connected) await loadQR();
   return ()=>{ off.forEach(f=>f()); clearInterval(tick); };
 };
 
@@ -877,7 +935,7 @@ views.logs=async root=>{
   root.innerHTML=head('Audit','Activity','Everything the bot and dashboard have done.')+
     `<div class="toolbar"><input type="search" id="l-q" placeholder="Search activity" aria-label="Search activity">
      <select id="l-lv" aria-label="Severity"><option value="">All severities</option><option>info</option><option>warning</option><option>error</option></select>
-     <select id="l-ty" aria-label="Type"><option value="">All types</option>${['connection','system','command','config','moderation','group','error'].map(t=>`<option>${t}</option>`).join('')}</select></div>
+     <select id="l-ty" aria-label="Type"><option value="">All types</option>${['authentication','onboarding','administrative','system','connection','command','config','moderation','group','error'].map(t=>`<option>${t}</option>`).join('')}</select></div>
      <div id="l-list">${skel(6)}</div>`;
   let page=1; const SIZE=25;
   async function load(){
@@ -1042,10 +1100,26 @@ async function mockApi(path,method='GET',body){
 /* ---------- boot ---------- */
 async function boot(){
   if(MOCK){ state.base='mock'; state.onboarded=true; showApp(); return; }
-  if(!state.base){ try{ state.base=(DEFAULT_API_BASE||localStorage.getItem('sonicos.apiBase')||'').replace(/\/+$/,''); }catch{ state.base=DEFAULT_API_BASE; } }
+  if(!state.base){
+    try{
+      const saved=localStorage.getItem('sonicos.apiBase')||'';
+      const sameOrigin=/^https?:$/.test(location.protocol)?location.origin:'';
+      state.base=(DEFAULT_API_BASE||saved||sameOrigin).replace(/\/+$/,'');
+    }catch{ state.base=(DEFAULT_API_BASE||(/^https?:$/.test(location.protocol)?location.origin:'')).replace(/\/+$/,''); }
+  }
+  if(!state.base){ showSetup(); return; }
   try{ state.onboarded = localStorage.getItem('sonicos.onboarded') === '1'; }catch{}
-  try{ await api(EP.me); if(state.onboarded){ showApp(); } else { showOnboard(); } }
-  catch(e){ if(e.status===401) showLogin(); else showSetup(e.status===0?'Cannot reach that URL. Check that the bot is running and allows this origin (CORS).':e.message); }
+  try{
+    const me=await api(EP.me);
+    if(!me||!me.authenticated){ showLogin(); return; }
+    await refreshStatus();
+    if((state.status&&state.status.connected)||state.onboarded){ showApp(); }
+    else{ showOnboard(); }
+  }catch(e){
+    if(e.status===401) showLogin();
+    else if(e.status===503) showScreen(`<div class="logo"><i></i>SONICOS</div><h1>Dashboard disabled.</h1><p>${esc(e.message||'Set DASHBOARD_PASSWORD in your environment variables and restart the bot.')}</p>`);
+    else showSetup(e.status===0?'Cannot reach that URL. Check that the bot is running and allows this origin (CORS).':e.message);
+  }
 }
 $('#menu-btn').onclick=()=>{ const o=$('#side').classList.toggle('open'); $('#menu-btn').setAttribute('aria-expanded',String(o)); };
 $('#signout').onclick=async()=>{ if(MOCK){ toast('Demo mode: sign-out is disabled'); return; } try{ await api(EP.logout,{method:'POST'}); }catch{} showLogin(); };

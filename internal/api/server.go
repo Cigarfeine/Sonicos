@@ -1,56 +1,100 @@
 package api
 
 import (
+	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/SafwanGanz/Sonicos/cmd/static"
+	"github.com/SafwanGanz/Sonicos/internal/audit"
 	"github.com/SafwanGanz/Sonicos/internal/command"
 	"github.com/SafwanGanz/Sonicos/internal/whatsapp"
+	"go.mau.fi/whatsmeow/types"
+	"rsc.io/qr"
 )
 
+const (
+	sessionCookieName = "sonicos_session"
+	sessionTTL        = 7 * 24 * time.Hour
+	maxSessions       = 64
+	rateLimitMaxFails = 5
+	rateLimitWindow   = 5 * time.Minute
+	sseHeartbeat      = 25 * time.Second
+)
+
+// BotClient abstracts the WhatsApp bot operations exposed through the dashboard API.
+type BotClient interface {
+	ClientState() string
+	DeviceID() *types.JID
+	ConnectedSince() time.Time
+	QRCode() (whatsapp.QRSnapshot, error)
+	RefreshQR() error
+	RequestPairing(ctx context.Context, countryCode, phoneNumber string) (string, time.Time, error)
+	Reconnect() error
+	Disconnect() error
+	Unlink() error
+	ListGroups() []whatsapp.GroupInfo
+	GetGroup(jid string) *whatsapp.GroupInfo
+	ListUsers() []whatsapp.GroupParticipantInfo
+}
+
 type Server struct {
-	bot         *whatsapp.Bot
-	registry    *command.Registry
-	modStore    command.ModerationStore
-	logger      *slog.Logger
-	authPassword string
-	mu          sync.RWMutex
-	settings    map[string]any
-	clients     map[chan []byte]struct{}
-	clientsMu   sync.Mutex
-	startedAt   time.Time
-	version     string
-	logBuffer   []logItem
-	logMu       sync.Mutex
-	maxLogs     int
-	modEvents   []modHistoryItem
-	modMu       sync.Mutex
+	bot            BotClient
+	registry       *command.Registry
+	modStore       command.ModerationStore
+	audit          *audit.Logger
+	logger         *slog.Logger
+	authPassword   string
+	allowedOrigins map[string]struct{}
+
+	mu       sync.RWMutex
+	settings map[string]any
+
+	sessionMu sync.RWMutex
+	sessions  map[string]time.Time
+
+	rateMu        sync.Mutex
+	loginAttempts map[string][]time.Time
+
+	clientsMu sync.Mutex
+	clients   map[chan []byte]struct{}
+
+	startedAt time.Time
+	version   string
+
+	modMu        sync.Mutex
+	modEvents    []modHistoryItem
 	maxModEvents int
 }
 
 type statusResponse struct {
-	Connected        bool   `json:"connected"`
-	State            string `json:"state"`
-	AccountID        string `json:"account_id"`
-	Phone            string `json:"phone"`
-	PushName         string `json:"push_name"`
-	UptimeSeconds    int64  `json:"uptime_seconds"`
-	ConnectedSince   string `json:"connected_since"`
-	TotalMessages    int64  `json:"total_messages"`
-	ActiveGroups     int    `json:"active_groups"`
-	TotalUsers       int    `json:"total_users"`
-	ModerationEvents int    `json:"moderation_events"`
-	TotalWarnings    int    `json:"total_warnings"`
-	Maintenance      bool   `json:"maintenance"`
-	Version          string `json:"version"`
+	Connected        bool          `json:"connected"`
+	State            string        `json:"state"`
+	AccountID        string        `json:"account_id"`
+	Phone            string        `json:"phone"`
+	PushName         string        `json:"push_name"`
+	UptimeSeconds    int64         `json:"uptime_seconds"`
+	ConnectedSince   string        `json:"connected_since,omitempty"`
+	TotalMessages    int64         `json:"total_messages"`
+	ActiveGroups     int           `json:"active_groups"`
+	TotalUsers       int           `json:"total_users"`
+	ModerationEvents int           `json:"moderation_events"`
+	TotalWarnings    int           `json:"total_warnings"`
+	Maintenance      bool          `json:"maintenance"`
+	Version          string        `json:"version"`
 	Health           []healthCheck `json:"health"`
 }
 
@@ -65,15 +109,15 @@ type loginRequest struct {
 }
 
 type loginResponse struct {
-	Authenticated bool   `json:"authenticated"`
-	Token         string `json:"token,omitempty"`
+	Authenticated bool `json:"authenticated"`
 }
 
 type qrResponse struct {
-	State       string `json:"state"`
-	QR          string `json:"qr,omitempty"`
-	Image       string `json:"qr_image,omitempty"`
-	ExpiresAt   string `json:"expires_at,omitempty"`
+	State     string `json:"state"`
+	QR        string `json:"qr,omitempty"`
+	Image     string `json:"qr_image,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 type pairRequest struct {
@@ -87,22 +131,22 @@ type pairResponse struct {
 }
 
 type settingsRequest struct {
-	BotName      string `json:"bot_name"`
-	Description  string `json:"description"`
-	Language     string `json:"language"`
-	Timezone     string `json:"timezone"`
-	AutoStart    bool   `json:"auto_start"`
-	Maintenance  bool   `json:"maintenance"`
+	BotName     string `json:"bot_name"`
+	Description string `json:"description"`
+	Language    string `json:"language"`
+	Timezone    string `json:"timezone"`
+	AutoStart   bool   `json:"auto_start"`
+	Maintenance bool   `json:"maintenance"`
 }
 
 type settingsResponse struct {
-	BotName      string `json:"bot_name"`
-	Prefix       string `json:"prefix"`
-	Description  string `json:"description"`
-	Language     string `json:"language"`
-	Timezone     string `json:"timezone"`
-	AutoStart    bool   `json:"auto_start"`
-	Maintenance  bool   `json:"maintenance"`
+	BotName     string `json:"bot_name"`
+	Prefix      string `json:"prefix"`
+	Description string `json:"description"`
+	Language    string `json:"language"`
+	Timezone    string `json:"timezone"`
+	AutoStart   bool   `json:"auto_start"`
+	Maintenance bool   `json:"maintenance"`
 }
 
 type prefixRequest struct {
@@ -110,30 +154,30 @@ type prefixRequest struct {
 }
 
 type groupResponse struct {
-	ID                 string   `json:"id"`
-	Name               string   `json:"name"`
-	Members            int      `json:"members"`
-	BotEnabled         bool     `json:"bot_enabled"`
-	WelcomeEnabled     bool     `json:"welcome_enabled"`
-	ModerationEnabled  bool     `json:"moderation_enabled"`
-	AdminOnlyCommands  bool     `json:"admin_only_commands"`
-	WelcomeMessage     string   `json:"welcome_message"`
-	DisabledCommands   []string `json:"disabled_commands"`
-	Admins             []groupAdmin `json:"admins"`
+	ID                string       `json:"id"`
+	Name              string       `json:"name"`
+	Members           int          `json:"members"`
+	BotEnabled        bool         `json:"bot_enabled"`
+	WelcomeEnabled    bool         `json:"welcome_enabled"`
+	ModerationEnabled bool         `json:"moderation_enabled"`
+	AdminOnlyCommands bool         `json:"admin_only_commands"`
+	WelcomeMessage    string       `json:"welcome_message"`
+	DisabledCommands  []string     `json:"disabled_commands"`
+	Admins            []groupAdmin `json:"admins"`
 }
 
 type groupAdmin struct {
-	JID string `json:"jid"`
+	JID  string `json:"jid"`
 	Name string `json:"name"`
 }
 
 type groupPatchRequest struct {
-	BotEnabled          *bool     `json:"bot_enabled,omitempty"`
-	WelcomeEnabled      *bool     `json:"welcome_enabled,omitempty"`
-	ModerationEnabled   *bool     `json:"moderation_enabled,omitempty"`
-	AdminOnlyCommands   *bool     `json:"admin_only_commands,omitempty"`
-	WelcomeMessage      string    `json:"welcome_message,omitempty"`
-	DisabledCommands    []string  `json:"disabled_commands,omitempty"`
+	BotEnabled        *bool    `json:"bot_enabled,omitempty"`
+	WelcomeEnabled    *bool    `json:"welcome_enabled,omitempty"`
+	ModerationEnabled *bool    `json:"moderation_enabled,omitempty"`
+	AdminOnlyCommands *bool    `json:"admin_only_commands,omitempty"`
+	WelcomeMessage    string   `json:"welcome_message,omitempty"`
+	DisabledCommands  []string `json:"disabled_commands,omitempty"`
 }
 
 type moderationSettings struct {
@@ -148,25 +192,25 @@ type moderationSettings struct {
 }
 
 type enrolledItem struct {
-	ID          string `json:"id"`
-	Label       string `json:"label"`
-	Type        string `json:"type"`
-	EnrolledAt  string `json:"enrolled_at"`
-	EnrolledBy  string `json:"enrolled_by"`
+	ID             string `json:"id"`
+	Label          string `json:"label"`
+	Type           string `json:"type"`
+	EnrolledAt     string `json:"enrolled_at"`
+	EnrolledBy     string `json:"enrolled_by"`
 	EnrolledByName string `json:"enrolled_by_name,omitempty"`
 }
 
 type matchItem struct {
-	ID        string `json:"id"`
-	Tier      string `json:"tier"`
-	TS        string `json:"ts"`
-	User      string `json:"user"`
-	UserName  string `json:"user_name"`
-	Group     string `json:"group"`
-	GroupName string `json:"group_name"`
-	Type      string `json:"type"`
+	ID         string  `json:"id"`
+	Tier       string  `json:"tier"`
+	TS         string  `json:"ts"`
+	User       string  `json:"user"`
+	UserName   string  `json:"user_name"`
+	Group      string  `json:"group"`
+	GroupName  string  `json:"group_name"`
+	Type       string  `json:"type"`
 	Confidence float64 `json:"confidence"`
-	Status    string `json:"status"`
+	Status     string  `json:"status"`
 }
 
 type matchReviewRequest struct {
@@ -185,39 +229,31 @@ type modHistoryItem struct {
 }
 
 type userItem struct {
-	JID        string `json:"jid"`
-	Name       string `json:"name"`
-	Display    string `json:"display"`
-	Group      string `json:"group"`
-	GroupName  string `json:"group_name"`
-	IsAdmin    bool   `json:"is_admin"`
-	Warnings   int    `json:"warnings"`
+	JID       string `json:"jid"`
+	Name      string `json:"name"`
+	Display   string `json:"display"`
+	Group     string `json:"group"`
+	GroupName string `json:"group_name"`
+	IsAdmin   bool   `json:"is_admin"`
+	Warnings  int    `json:"warnings"`
 }
 
 type userHistoryItem struct {
-	TS        string `json:"ts"`
-	Action    string `json:"action"`
-	Type      string `json:"type"`
-	Detail    string `json:"detail"`
-	Message   string `json:"message"`
-}
-
-type logItem struct {
-	ID     string `json:"id"`
-	TS     string `json:"ts"`
-	Level  string `json:"level"`
-	Type   string `json:"type"`
+	TS      string `json:"ts"`
+	Action  string `json:"action"`
+	Type    string `json:"type"`
+	Detail  string `json:"detail"`
 	Message string `json:"message"`
 }
 
 type commandItem struct {
-	Name        string `json:"name"`
+	Name        string   `json:"name"`
 	Aliases     []string `json:"aliases"`
-	Category    string `json:"category"`
-	Description string `json:"description"`
-	Enabled     bool   `json:"enabled"`
-	Permission  string `json:"permission"`
-	AdminOnly   bool   `json:"admin_only"`
+	Category    string   `json:"category"`
+	Description string   `json:"description"`
+	Enabled     bool     `json:"enabled"`
+	Permission  string   `json:"permission"`
+	AdminOnly   bool     `json:"admin_only"`
 }
 
 type pagedResponse struct {
@@ -225,34 +261,51 @@ type pagedResponse struct {
 	Total int   `json:"total"`
 }
 
-func NewServer(bot *whatsapp.Bot, registry *command.Registry, modStore command.ModerationStore, logger *slog.Logger) *Server {
+// NewServer constructs the hardened HTTP dashboard and API server.
+func NewServer(
+	bot BotClient,
+	registry *command.Registry,
+	modStore command.ModerationStore,
+	auditLog *audit.Logger,
+	authPassword string,
+	allowedOrigins []string,
+	logger *slog.Logger,
+) *Server {
+	if auditLog == nil {
+		auditLog = audit.New(logger, 1000)
+	}
+	originSet := make(map[string]struct{}, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		clean := strings.TrimRight(strings.TrimSpace(o), "/")
+		if clean != "" {
+			originSet[strings.ToLower(clean)] = struct{}{}
+		}
+	}
+
 	s := &Server{
-		bot:          bot,
-		registry:     registry,
-		modStore:     modStore,
-		logger:       logger,
-		settings:     make(map[string]any),
-		clients:      make(map[chan []byte]struct{}),
-		startedAt:    time.Now(),
-		version:      "v0.1.0",
-		logBuffer:    make([]logItem, 0, 1000),
-		maxLogs:      1000,
-		modEvents:    make([]modHistoryItem, 0, 500),
-		maxModEvents: 500,
+		bot:            bot,
+		registry:       registry,
+		modStore:       modStore,
+		audit:          auditLog,
+		logger:         logger,
+		authPassword:   authPassword,
+		allowedOrigins: originSet,
+		settings:       make(map[string]any),
+		sessions:       make(map[string]time.Time),
+		loginAttempts:  make(map[string][]time.Time),
+		clients:        make(map[chan []byte]struct{}),
+		startedAt:      time.Now(),
+		version:        "v0.1.0",
+		modEvents:      make([]modHistoryItem, 0, 500),
+		maxModEvents:   500,
 	}
 
-	// Load auth password from env
-	s.authPassword = os.Getenv("DASHBOARD_PASSWORD")
-	if s.authPassword == "" {
-		s.authPassword = "36545280"
+	prefix := strings.TrimSpace(os.Getenv("BOT_PREFIX"))
+	if prefix == "" {
+		prefix = "!"
 	}
-
-	// Initialize default settings
 	s.settings["bot_name"] = "Sonicos"
-	s.settings["prefix"] = os.Getenv("BOT_PREFIX")
-	if s.settings["prefix"] == "" {
-		s.settings["prefix"] = "!"
-	}
+	s.settings["prefix"] = prefix
 	s.settings["description"] = "A helpful WhatsApp assistant for community groups."
 	s.settings["language"] = "en"
 	s.settings["timezone"] = "UTC"
@@ -262,54 +315,98 @@ func NewServer(bot *whatsapp.Bot, registry *command.Registry, modStore command.M
 	return s
 }
 
-func (s *Server) authMiddleware(next http.Handler) http.Handler {
+// NewDisabledHandler serves a minimal locked handler when PORT is set by a cloud platform
+// without DASHBOARD_PASSWORD configured.
+func NewDisabledHandler(auditLog *audit.Logger) http.Handler {
+	const disabledMsg = "Dashboard disabled: set DASHBOARD_PASSWORD in your environment variables and redeploy."
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Allow auth endpoints without auth
-		path := r.URL.Path
-		if path == "/auth/login" || path == "/auth/logout" || path == "/auth/me" {
-			next.ServeHTTP(w, r)
+		setCommonSecurityHeaders(w)
+		if r.URL.Path == "/health" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok","dashboard":"disabled"}`))
 			return
 		}
-		// Check session cookie
-		cookie, err := r.Cookie("sonicos_session")
-		if err != nil || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(s.authPassword)) != 1 {
-			http.Error(w, `{"error":"Not signed in"}`, http.StatusUnauthorized)
+		if auditLog != nil {
+			auditLog.Record("system", "warning", "anonymous", r.URL.Path, "disabled_dashboard_access", "denied", audit.ClientIP(r), "request rejected because DASHBOARD_PASSWORD is not configured", nil)
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		if strings.Contains(r.Header.Get("Accept"), "text/html") && r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sonicos — Dashboard Disabled</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0e0e0e;color:#f1efea;font-family:system-ui,-apple-system,sans-serif;padding:24px}.box{max-width:520px;border:1px solid #333;background:#141414;padding:28px}h1{margin:0 0 12px;font-weight:400}p{margin:0;color:#8b8b86;line-height:1.6}code{color:#ff4a1c}</style></head><body><div class="box"><h1>Dashboard disabled</h1><p>Set <code>DASHBOARD_PASSWORD</code> in your environment variables and restart the bot to enable the protected WhatsApp onboarding dashboard. Terminal QR pairing remains active in logs.</p></div></body></html>`))
 			return
 		}
-		next.ServeHTTP(w, r)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": disabledMsg})
 	})
 }
 
-func (s *Server) enableCORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		if origin == "" {
-			origin = "*"
+func setCommonSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+}
+
+func isHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+}
+
+func (s *Server) isOriginAllowed(origin string, r *http.Request) bool {
+	u, err := url.Parse(strings.TrimSpace(origin))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return false
+	}
+	normalized := strings.ToLower(u.Scheme + "://" + u.Host)
+	if _, ok := s.allowedOrigins[normalized]; ok {
+		return true
+	}
+	if strings.EqualFold(u.Host, r.Host) {
+		return true
+	}
+	if xfh := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); xfh != "" {
+		firstHost, _, _ := strings.Cut(xfh, ",")
+		if strings.EqualFold(u.Host, strings.TrimSpace(firstHost)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) applyCORSAndCSRF(w http.ResponseWriter, r *http.Request) bool {
+	setCommonSecurityHeaders(w)
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin != "" {
+		if !s.isOriginAllowed(origin, r) {
+			if r.Method == http.MethodOptions || isMutatingMethod(r.Method) {
+				s.writeError(w, http.StatusForbidden, "origin not allowed")
+				return false
+			}
+			return true
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Vary", "Origin")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Requested-With, Authorization, Cookie")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Requested-With")
+	}
+
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return false
+	}
+	return true
+}
+
+func isMutatingMethod(method string) bool {
+	return method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch || method == http.MethodDelete
 }
 
 func (s *Server) cors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		if origin == "" {
-			origin = "*"
-		}
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Requested-With, Authorization, Cookie")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
+		if !s.applyCORSAndCSRF(w, r) {
 			return
 		}
 		next(w, r)
@@ -318,32 +415,144 @@ func (s *Server) cors(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) corsAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		if origin == "" {
-			origin = "*"
-		}
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Requested-With, Authorization, Cookie")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
+		w.Header().Set("Cache-Control", "no-store")
+		if !s.applyCORSAndCSRF(w, r) {
 			return
 		}
-
-		// Auth check (skip for auth endpoints)
-		path := r.URL.Path
-		if path == "/auth/login" || path == "/auth/logout" || path == "/auth/me" {
-			next(w, r)
-			return
-		}
-		cookie, err := r.Cookie("sonicos_session")
-		if err != nil || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(s.authPassword)) != 1 {
+		if _, ok := s.validateSession(r); !ok {
+			s.audit.Record("authentication", "warning", "anonymous", r.URL.Path, "unauthorized_access", "failure", audit.ClientIP(r), "unauthenticated API request rejected", nil)
 			s.writeError(w, http.StatusUnauthorized, "Not signed in")
 			return
 		}
 		next(w, r)
 	}
+}
+
+func (s *Server) newSessionToken() (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(raw[:])
+	now := time.Now().UTC()
+	exp := now.Add(sessionTTL)
+
+	s.sessionMu.Lock()
+	for k, v := range s.sessions {
+		if now.After(v) {
+			delete(s.sessions, k)
+		}
+	}
+	for len(s.sessions) >= maxSessions {
+		var oldestKey string
+		var oldestExp time.Time
+		for k, v := range s.sessions {
+			if oldestKey == "" || v.Before(oldestExp) {
+				oldestKey = k
+				oldestExp = v
+			}
+		}
+		if oldestKey != "" {
+			delete(s.sessions, oldestKey)
+		} else {
+			break
+		}
+	}
+	s.sessions[token] = exp
+	s.sessionMu.Unlock()
+	return token, nil
+}
+
+func (s *Server) validateSession(r *http.Request) (string, bool) {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return "", false
+	}
+	now := time.Now().UTC()
+	s.sessionMu.RLock()
+	exp, ok := s.sessions[cookie.Value]
+	s.sessionMu.RUnlock()
+	if !ok {
+		return "", false
+	}
+	if now.After(exp) {
+		s.sessionMu.Lock()
+		delete(s.sessions, cookie.Value)
+		s.sessionMu.Unlock()
+		return "", false
+	}
+	return cookie.Value, true
+}
+
+func (s *Server) revokeSession(token string) {
+	if token == "" {
+		return
+	}
+	s.sessionMu.Lock()
+	delete(s.sessions, token)
+	s.sessionMu.Unlock()
+}
+
+func (s *Server) checkLoginRateLimit(ip string) (bool, int) {
+	if ip == "" {
+		ip = "unknown"
+	}
+	now := time.Now().UTC()
+	cutoff := now.Add(-rateLimitWindow)
+
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+
+	attempts := s.loginAttempts[ip]
+	pruned := attempts[:0]
+	for _, ts := range attempts {
+		if ts.After(cutoff) {
+			pruned = append(pruned, ts)
+		}
+	}
+	if len(pruned) == 0 {
+		delete(s.loginAttempts, ip)
+		return false, 0
+	}
+	s.loginAttempts[ip] = pruned
+	if len(pruned) >= rateLimitMaxFails {
+		retryAfter := int(pruned[0].Add(rateLimitWindow).Sub(now).Seconds()) + 1
+		if retryAfter < 1 {
+			retryAfter = 1
+		}
+		return true, retryAfter
+	}
+	return false, 0
+}
+
+func (s *Server) recordLoginFailure(ip string) {
+	if ip == "" {
+		ip = "unknown"
+	}
+	now := time.Now().UTC()
+	cutoff := now.Add(-rateLimitWindow)
+
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+
+	attempts := s.loginAttempts[ip]
+	pruned := make([]time.Time, 0, len(attempts)+1)
+	for _, ts := range attempts {
+		if ts.After(cutoff) {
+			pruned = append(pruned, ts)
+		}
+	}
+	pruned = append(pruned, now)
+	s.loginAttempts[ip] = pruned
+}
+
+func (s *Server) clearLoginFailures(ip string) {
+	if ip == "" {
+		return
+	}
+	s.rateMu.Lock()
+	delete(s.loginAttempts, ip)
+	s.rateMu.Unlock()
 }
 
 func (s *Server) json(w http.ResponseWriter, code int, v any) {
@@ -358,15 +567,16 @@ func (s *Server) readJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	if r.Body == nil {
 		return errors.New("missing request body")
 	}
-	defer r.Body.Close()
-	return json.NewDecoder(r.Body).Decode(v)
+	limited := http.MaxBytesReader(w, r.Body, 1<<20)
+	defer limited.Close()
+	return json.NewDecoder(limited).Decode(v)
 }
 
 func (s *Server) writeError(w http.ResponseWriter, code int, msg string) {
 	s.json(w, code, map[string]string{"error": msg})
 }
 
-// SSE broadcast
+// broadcast sends an SSE event to all connected dashboard clients.
 func (s *Server) broadcast(event string, data any) {
 	payload, _ := json.Marshal(data)
 	msg := fmt.Sprintf("event: %s\ndata: %s\n\n", event, string(payload))
@@ -394,91 +604,164 @@ func (s *Server) removeClient(ch chan []byte) {
 	close(ch)
 }
 
+// HandleBotEvent receives asynchronous state updates from the WhatsApp bot and pushes SSE updates.
+func (s *Server) HandleBotEvent(event string, data any) {
+	switch event {
+	case "qr":
+		if snap, ok := data.(whatsapp.QRSnapshot); ok {
+			s.broadcast("qr", buildQRResponse(snap))
+		}
+	case "status":
+		if meta, ok := data.(map[string]any); ok {
+			if evName, _ := meta["event"].(string); evName != "" {
+				level := "info"
+				result := "success"
+				if evName == "disconnected" || evName == "logged_out" {
+					level = "warning"
+				}
+				s.audit.Record("onboarding", level, "whatsapp", "whatsapp-session", "whatsapp_"+evName, result, "", "WhatsApp session event: "+evName, meta)
+			}
+		}
+		s.broadcast("status", s.buildStatus())
+	case "pairing":
+		s.broadcast("pairing", data)
+	}
+}
+
+// --- Health ---
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	setCommonSecurityHeaders(w)
+	w.Header().Set("Cache-Control", "no-store")
+	s.json(w, http.StatusOK, map[string]string{
+		"status":   "ok",
+		"whatsapp": s.bot.ClientState(),
+	})
+}
+
 // --- Auth ---
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodPost {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	ip := audit.ClientIP(r)
+	if limited, retryAfter := s.checkLoginRateLimit(ip); limited {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		s.audit.Record("authentication", "warning", "anonymous", "dashboard-auth", "login_rate_limited", "failure", ip, "login blocked due to repeated failed attempts", map[string]any{"retry_after_seconds": retryAfter})
+		s.writeError(w, http.StatusTooManyRequests, "too many login attempts; try again later")
+		return
+	}
+
 	var req loginRequest
 	if err := s.readJSON(w, r, &req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(req.Password), []byte(s.authPassword)) == 1 {
-		http.SetCookie(w, &http.Cookie{
-			Name:     "sonicos_session",
-			Value:    s.authPassword,
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   r.TLS != nil,
-			SameSite: http.SameSiteLaxMode,
-			MaxAge:   86400 * 7,
-		})
-		s.addLog("info", "user authenticated via dashboard")
-		s.json(w, http.StatusOK, loginResponse{Authenticated: true})
-	} else {
+
+	if s.authPassword == "" || subtle.ConstantTimeCompare([]byte(req.Password), []byte(s.authPassword)) != 1 {
+		s.recordLoginFailure(ip)
+		s.audit.Record("authentication", "warning", "anonymous", "dashboard-auth", "login", "failure", ip, "dashboard login failed: incorrect password", nil)
 		s.writeError(w, http.StatusUnauthorized, "incorrect password")
+		return
 	}
+
+	token, err := s.newSessionToken()
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "failed to create session")
+		return
+	}
+	s.clearLoginFailures(ip)
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   isHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(sessionTTL.Seconds()),
+	})
+	s.audit.Record("authentication", "info", "admin", "dashboard-auth", "login", "success", ip, "user authenticated via dashboard", nil)
+	s.broadcast("activity", map[string]string{"type": "authentication"})
+	s.json(w, http.StatusOK, loginResponse{Authenticated: true})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodPost {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		s.revokeSession(cookie.Value)
+	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     "sonicos_session",
+		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
+		HttpOnly: true,
+		Secure:   isHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
-	s.addLog("info", "user logged out from dashboard")
+	s.audit.Record("authentication", "info", "admin", "dashboard-auth", "logout", "success", audit.ClientIP(r), "user logged out from dashboard", nil)
 	s.json(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodGet {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	cookie, err := r.Cookie("sonicos_session")
-	authenticated := err == nil && subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(s.authPassword)) == 1
-	s.json(w, http.StatusOK, map[string]any{"authenticated": authenticated})
+	if _, ok := s.validateSession(r); !ok {
+		s.json(w, http.StatusUnauthorized, map[string]any{"authenticated": false, "error": "Not signed in"})
+		return
+	}
+	s.json(w, http.StatusOK, map[string]any{"authenticated": true})
 }
 
 // --- Status ---
 
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
+func (s *Server) buildStatus() statusResponse {
 	st := s.bot.ClientState()
 	connected := st == "connected"
 
 	accountID := ""
 	phone := ""
 	pushName := ""
-	if s.bot.DeviceID() != nil {
-		accountID = s.bot.DeviceID().String()
-		phone = s.bot.DeviceID().User
+	if dev := s.bot.DeviceID(); dev != nil {
+		accountID = dev.String()
+		phone = dev.User
 	}
 
-	resp := statusResponse{
+	sinceStr := ""
+	if connected {
+		if since := s.bot.ConnectedSince(); !since.IsZero() {
+			sinceStr = since.UTC().Format(time.RFC3339)
+		}
+	}
+
+	return statusResponse{
 		Connected:        connected,
 		State:            st,
 		AccountID:        accountID,
 		Phone:            phone,
 		PushName:         pushName,
 		UptimeSeconds:    int64(time.Since(s.startedAt).Seconds()),
-	TotalMessages:    s.getStat("messages", 0),
-	ActiveGroups:     int(s.getStat("groups", 0)),
-	TotalUsers:       int(s.getStat("users", 0)),
-	ModerationEvents: int(s.getStat("moderation", 0)),
-	TotalWarnings:    int(s.getStat("warnings", 0)),
+		ConnectedSince:   sinceStr,
+		TotalMessages:    s.getStat("messages", 0),
+		ActiveGroups:     int(s.getStat("groups", 0)),
+		TotalUsers:       int(s.getStat("users", 0)),
+		ModerationEvents: int(s.getStat("moderation", 0)),
+		TotalWarnings:    int(s.getStat("warnings", 0)),
 		Maintenance:      s.getBool("maintenance", false),
 		Version:          s.version,
 		Health: []healthCheck{
@@ -488,11 +771,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			{Name: "Webhook queue", Status: "ok", Detail: "No pending deliveries"},
 		},
 	}
-	if connected {
-		resp.ConnectedSince = ""
-	}
+}
 
-	s.json(w, http.StatusOK, resp)
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	s.json(w, http.StatusOK, s.buildStatus())
 }
 
 func healthStatus(connected bool) string {
@@ -511,34 +797,53 @@ func healthDetail(connected bool) string {
 
 // --- QR ---
 
+func encodeQRPNGDataURL(payload string) string {
+	if payload == "" {
+		return ""
+	}
+	code, err := qr.Encode(payload, qr.M)
+	if err != nil {
+		return ""
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(code.PNG())
+}
+
+func buildQRResponse(snap whatsapp.QRSnapshot) qrResponse {
+	resp := qrResponse{
+		State: snap.State,
+		QR:    snap.Code,
+		Error: snap.Error,
+	}
+	if snap.Code != "" {
+		resp.Image = encodeQRPNGDataURL(snap.Code)
+	}
+	if !snap.ExpiresAt.IsZero() {
+		resp.ExpiresAt = snap.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	return resp
+}
+
 func (s *Server) handleQR(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	qrData, state, err := s.bot.QRCode()
+	snap, err := s.bot.QRCode()
 	if err != nil {
-		if errors.Is(err, errAlreadyConnected) {
+		if errors.Is(err, whatsapp.ErrAlreadyConnected) {
 			s.writeError(w, http.StatusConflict, "Already connected")
 			return
 		}
-		if errors.Is(err, errNoQR) {
-			w.WriteHeader(http.StatusNotFound)
+		if errors.Is(err, whatsapp.ErrNoQR) {
+			s.writeError(w, http.StatusNotFound, "No QR available")
 			return
 		}
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	resp := qrResponse{
-		State:  state,
-		QR:     qrData,
-	}
-	if qrData != "" {
-		resp.Image = "data:image/png;base64," + qrData
-	}
-	s.json(w, http.StatusOK, resp)
+	s.json(w, http.StatusOK, buildQRResponse(snap))
 }
 
 func (s *Server) handleQRRefresh(w http.ResponseWriter, r *http.Request) {
@@ -546,10 +851,17 @@ func (s *Server) handleQRRefresh(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	ip := audit.ClientIP(r)
 	if err := s.bot.RefreshQR(); err != nil {
+		if errors.Is(err, whatsapp.ErrAlreadyConnected) {
+			s.writeError(w, http.StatusConflict, "Already connected")
+			return
+		}
+		s.audit.Record("onboarding", "error", "admin", "whatsapp-qr", "qr_refresh", "failure", ip, "QR refresh failed: "+err.Error(), nil)
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.audit.Record("onboarding", "info", "admin", "whatsapp-qr", "qr_refresh", "success", ip, "WhatsApp QR pairing session refreshed", nil)
 	s.json(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 
@@ -565,22 +877,34 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	if req.CountryCode == "" || req.PhoneNumber == "" {
+	if strings.TrimSpace(req.CountryCode) == "" || strings.TrimSpace(req.PhoneNumber) == "" {
 		s.writeError(w, http.StatusBadRequest, "country_code and phone_number are required")
 		return
 	}
 
-	code, expiresAt, err := s.bot.RequestPairing(req.CountryCode, req.PhoneNumber)
+	ip := audit.ClientIP(r)
+	maskedPhone := audit.MaskPhone(req.CountryCode + req.PhoneNumber)
+
+	code, expiresAt, err := s.bot.RequestPairing(r.Context(), req.CountryCode, req.PhoneNumber)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		s.audit.Record("onboarding", "warning", "admin", "whatsapp-pairing", "phone_pair_request", "failure", ip, "phone pairing failed for "+maskedPhone, map[string]any{"phone": maskedPhone})
+		if errors.Is(err, whatsapp.ErrAlreadyConnected) {
+			s.writeError(w, http.StatusConflict, "Already connected. Unlink the account first.")
+			return
+		}
+		if strings.Contains(err.Error(), "digits") {
+			s.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 
-	resp := pairResponse{
+	s.audit.Record("onboarding", "info", "admin", "whatsapp-pairing", "phone_pair_request", "success", ip, "pairing code generated for "+maskedPhone, map[string]any{"phone": maskedPhone})
+	s.json(w, http.StatusOK, pairResponse{
 		PairingCode: code,
-		ExpiresAt:   expiresAt,
-	}
-	s.json(w, http.StatusOK, resp)
+		ExpiresAt:   expiresAt.UTC().Format(time.RFC3339),
+	})
 }
 
 // --- Connection ---
@@ -590,10 +914,13 @@ func (s *Server) handleReconnect(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	ip := audit.ClientIP(r)
 	if err := s.bot.Reconnect(); err != nil {
+		s.audit.Record("onboarding", "error", "admin", "whatsapp-session", "reconnect", "failure", ip, "WhatsApp reconnect failed", nil)
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.audit.Record("onboarding", "info", "admin", "whatsapp-session", "reconnect", "success", ip, "WhatsApp reconnect requested", nil)
 	s.json(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 
@@ -602,10 +929,13 @@ func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	ip := audit.ClientIP(r)
 	if err := s.bot.Disconnect(); err != nil {
+		s.audit.Record("onboarding", "error", "admin", "whatsapp-session", "disconnect", "failure", ip, "WhatsApp disconnect failed", nil)
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.audit.Record("onboarding", "warning", "admin", "whatsapp-session", "disconnect", "success", ip, "WhatsApp disconnected from dashboard", nil)
 	s.json(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 
@@ -614,10 +944,13 @@ func (s *Server) handleUnlink(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	ip := audit.ClientIP(r)
 	if err := s.bot.Unlink(); err != nil {
+		s.audit.Record("onboarding", "error", "admin", "whatsapp-session", "unlink", "failure", ip, "WhatsApp unlink failed", nil)
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.audit.Record("onboarding", "warning", "admin", "whatsapp-session", "unlink", "success", ip, "WhatsApp account unlinked from dashboard", nil)
 	s.json(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 
@@ -643,15 +976,24 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.mu.Lock()
-		if req.BotName != "" { s.settings["bot_name"] = req.BotName }
-		if req.Description != "" { s.settings["description"] = req.Description }
-		if req.Language != "" { s.settings["language"] = req.Language }
-		if req.Timezone != "" { s.settings["timezone"] = req.Timezone }
+		if req.BotName != "" {
+			s.settings["bot_name"] = req.BotName
+		}
+		if req.Description != "" {
+			s.settings["description"] = req.Description
+		}
+		if req.Language != "" {
+			s.settings["language"] = req.Language
+		}
+		if req.Timezone != "" {
+			s.settings["timezone"] = req.Timezone
+		}
 		s.settings["auto_start"] = req.AutoStart
 		s.settings["maintenance"] = req.Maintenance
 		s.mu.Unlock()
 		s.broadcast("config", map[string]string{"action": "settings_updated"})
-		s.addLog("info", "dashboard settings updated")
+		s.audit.Record("administrative", "info", "admin", "bot-settings", "settings_updated", "success", audit.ClientIP(r), "dashboard settings updated", map[string]any{"maintenance": req.Maintenance})
+		s.broadcast("activity", map[string]string{"type": "administrative"})
 		s.json(w, http.StatusOK, map[string]string{"ok": "true"})
 	default:
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -676,7 +1018,7 @@ func (s *Server) handleChangePrefix(w http.ResponseWriter, r *http.Request) {
 	s.settings["prefix"] = req.Prefix
 	s.mu.Unlock()
 	s.broadcast("config", map[string]string{"action": "prefix_changed", "prefix": req.Prefix})
-	s.addLog("info", "bot prefix changed to "+req.Prefix)
+	s.audit.Record("administrative", "info", "admin", "bot-settings", "prefix_changed", "success", audit.ClientIP(r), "bot prefix changed to "+req.Prefix, map[string]any{"prefix": req.Prefix})
 	s.json(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 
@@ -685,6 +1027,10 @@ func (s *Server) handleChangePrefix(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.registry == nil {
+		s.json(w, http.StatusOK, []commandItem{})
 		return
 	}
 	cmds := s.registry.Commands()
@@ -712,6 +1058,7 @@ func (s *Server) handleCommandPatch(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "command name required")
 		return
 	}
+	s.audit.Record("administrative", "info", "admin", "command:"+name, "command_updated", "success", audit.ClientIP(r), "command configuration updated", nil)
 	s.json(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 
@@ -726,15 +1073,13 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 	out := make([]groupResponse, 0, len(groups))
 	for _, g := range groups {
 		out = append(out, groupResponse{
-			ID:                 g.JID,
-			Name:               g.Name,
-			Members:            len(g.Participants),
-			BotEnabled:         true,
-			WelcomeEnabled:     false,
-			ModerationEnabled:  false,
-			AdminOnlyCommands:  false,
-			DisabledCommands:   nil,
-			Admins:             nil,
+			ID:                g.JID,
+			Name:              g.Name,
+			Members:           len(g.Participants),
+			BotEnabled:        true,
+			WelcomeEnabled:    false,
+			ModerationEnabled: false,
+			AdminOnlyCommands: false,
 		})
 	}
 	s.json(w, http.StatusOK, out)
@@ -754,15 +1099,13 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp := groupResponse{
-			ID:                 g.JID,
-			Name:               g.Name,
-			Members:            len(g.Participants),
-			BotEnabled:         true,
-			WelcomeEnabled:     false,
-			ModerationEnabled:  false,
-			AdminOnlyCommands:  false,
-			DisabledCommands:   nil,
-			Admins:             nil,
+			ID:                g.JID,
+			Name:              g.Name,
+			Members:           len(g.Participants),
+			BotEnabled:        true,
+			WelcomeEnabled:    false,
+			ModerationEnabled: false,
+			AdminOnlyCommands: false,
 		}
 		s.json(w, http.StatusOK, resp)
 	case http.MethodPatch:
@@ -773,6 +1116,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request) {
 		}
 		s.broadcast("group", map[string]string{"id": id, "action": "updated"})
 		s.addModEvent("dashboard", "group_updated", "group "+id)
+		s.audit.Record("administrative", "info", "admin", "group:"+id, "group_updated", "success", audit.ClientIP(r), "group settings updated", nil)
 		s.json(w, http.StatusOK, map[string]string{"ok": "true"})
 	default:
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -812,6 +1156,7 @@ func (s *Server) handleModSettings(w http.ResponseWriter, r *http.Request) {
 		s.settings["mod_possible_confidence"] = req.PossibleConfidence
 		s.mu.Unlock()
 		s.broadcast("moderation", map[string]string{"action": "settings_updated"})
+		s.audit.Record("administrative", "info", "admin", "moderation-settings", "moderation_settings_updated", "success", audit.ClientIP(r), "moderation settings updated", map[string]any{"enabled": req.Enabled, "dry_run": req.DryRun})
 		s.json(w, http.StatusOK, map[string]string{"ok": "true"})
 	default:
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -843,11 +1188,11 @@ func (s *Server) handleModEnrolled(w http.ResponseWriter, r *http.Request) {
 			}
 			seen[key] = struct{}{}
 			items = append(items, enrolledItem{
-				ID:           key,
-				Label:        e.Reason,
-				Type:         "sticker",
-				EnrolledAt:   time.Unix(e.AddedAt, 0).UTC().Format(time.RFC3339),
-				EnrolledBy:   e.AddedBy,
+				ID:         key,
+				Label:      e.Reason,
+				Type:       "sticker",
+				EnrolledAt: time.Unix(e.AddedAt, 0).UTC().Format(time.RFC3339),
+				EnrolledBy: e.AddedBy,
 			})
 		}
 	}
@@ -876,16 +1221,13 @@ func (s *Server) handleModMatches(w http.ResponseWriter, r *http.Request) {
 	items := make([]matchItem, 0, len(s.modEvents))
 	for _, e := range s.modEvents {
 		items = append(items, matchItem{
-			ID:        e.TS,
-			Tier:      "high",
-			TS:        e.TS,
-			User:      e.User,
-			UserName:  "",
-			Group:     "",
-			GroupName: "",
-			Type:      e.Action,
+			ID:         e.TS,
+			Tier:       "high",
+			TS:         e.TS,
+			User:       e.User,
+			Type:       e.Action,
 			Confidence: 1.0,
-			Status:    "reviewed",
+			Status:     "reviewed",
 		})
 	}
 	s.modMu.Unlock()
@@ -950,13 +1292,13 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		items = append(items, userItem{
-			JID:        u.JID,
-			Name:       u.Name,
-			Display:    u.Name,
-			Group:      strings.Join(u.Groups, ","),
-			GroupName:  strings.Join(u.GroupNames, ","),
-			IsAdmin:    u.IsAdmin,
-			Warnings:   warnings,
+			JID:       u.JID,
+			Name:      u.Name,
+			Display:   u.Name,
+			Group:     strings.Join(u.Groups, ","),
+			GroupName: strings.Join(u.GroupNames, ","),
+			IsAdmin:   u.IsAdmin,
+			Warnings:  warnings,
 		})
 	}
 	anyItems := make([]any, len(items))
@@ -966,27 +1308,10 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	s.json(w, http.StatusOK, pagedResponse{Items: anyItems, Total: len(items)})
 }
 
-func (s *Server) handleUserHistory(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	items := []userHistoryItem{}
-	s.json(w, http.StatusOK, items)
-}
-
-func (s *Server) handleUserReset(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	s.json(w, http.StatusOK, map[string]string{"ok": "true"})
-}
-
 func (s *Server) handleUserRoutes(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/users/")
 	parts := strings.Split(path, "/")
-	if len(parts) < 1 {
+	if len(parts) < 1 || parts[0] == "" {
 		s.writeError(w, http.StatusNotFound, "not found")
 		return
 	}
@@ -1007,8 +1332,7 @@ func (s *Server) handleUserHistoryWithJID(w http.ResponseWriter, r *http.Request
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	items := []userHistoryItem{}
-	s.json(w, http.StatusOK, items)
+	s.json(w, http.StatusOK, []userHistoryItem{})
 }
 
 func (s *Server) handleUserResetWithJID(w http.ResponseWriter, r *http.Request, jid string) {
@@ -1016,6 +1340,7 @@ func (s *Server) handleUserResetWithJID(w http.ResponseWriter, r *http.Request, 
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	s.audit.Record("administrative", "info", "admin", "user:"+jid, "warnings_reset", "success", audit.ClientIP(r), "warnings reset via dashboard", nil)
 	s.json(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 
@@ -1026,15 +1351,16 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	s.logMu.Lock()
-	items := make([]logItem, len(s.logBuffer))
-	copy(items, s.logBuffer)
-	s.logMu.Unlock()
+	q := r.URL.Query()
+	page, _ := strconv.Atoi(q.Get("page"))
+	pageSize, _ := strconv.Atoi(q.Get("page_size"))
+
+	items, total := s.audit.List(q.Get("q"), q.Get("level"), q.Get("type"), page, pageSize)
 	anyItems := make([]any, len(items))
 	for i := range items {
 		anyItems[i] = items[i]
 	}
-	s.json(w, http.StatusOK, pagedResponse{Items: anyItems, Total: len(items)})
+	s.json(w, http.StatusOK, pagedResponse{Items: anyItems, Total: total})
 }
 
 // --- Events (SSE) ---
@@ -1045,32 +1371,32 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-		cookie, err := r.Cookie("sonicos_session")
-		if err != nil || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(s.authPassword)) != 1 {
-			// Allow SSE without auth for demo, but prefer auth
-			_ = cookie
-		}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.writeError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
 
-	ch := make(chan []byte, 8)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	ch := make(chan []byte, 16)
 	s.addClient(ch)
 	defer s.removeClient(ch)
 
-	// Send initial status
-	st := s.bot.ClientState()
-	initMsg := fmt.Sprintf("event: status\ndata: {\"state\":\"%s\",\"connected\":%v}\n\n", st, st == "connected")
-	w.Write([]byte(initMsg))
+	statusPayload, _ := json.Marshal(s.buildStatus())
+	_, _ = fmt.Fprintf(w, "event: status\ndata: %s\n\n", string(statusPayload))
+
+	if snap, err := s.bot.QRCode(); err == nil && snap.Code != "" {
+		qrPayload, _ := json.Marshal(buildQRResponse(snap))
+		_, _ = fmt.Fprintf(w, "event: qr\ndata: %s\n\n", string(qrPayload))
+	}
 	flusher.Flush()
+
+	heartbeat := time.NewTicker(sseHeartbeat)
+	defer heartbeat.Stop()
 
 	ctx := r.Context()
 	for {
@@ -1078,7 +1404,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case msg := <-ch:
-			w.Write(msg)
+			_, _ = w.Write(msg)
+			flusher.Flush()
+		case <-heartbeat.C:
+			_, _ = w.Write([]byte(": keepalive\n\n"))
 			flusher.Flush()
 		}
 	}
@@ -1091,7 +1420,17 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, "/app/cmd/static/index.html")
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https: http:")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodGet {
+		_, _ = w.Write(static.IndexHTML)
+	}
 }
 
 // --- Helpers ---
@@ -1100,8 +1439,8 @@ func (s *Server) getStr(key, def string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if v, ok := s.settings[key]; ok {
-		if s, ok := v.(string); ok {
-			return s
+		if str, ok := v.(string); ok {
+			return str
 		}
 	}
 	return def
@@ -1151,49 +1490,30 @@ func (s *Server) getStat(key string, def int64) int64 {
 	return def
 }
 
-func (s *Server) addLog(level, message string) {
-	s.logMu.Lock()
-	defer s.logMu.Unlock()
-	entry := logItem{
-		ID:      fmt.Sprintf("log-%d", time.Now().UnixNano()),
-		TS:      time.Now().UTC().Format(time.RFC3339),
-		Level:   level,
-		Type:    "system",
-		Message: message,
-	}
-	s.logBuffer = append(s.logBuffer, entry)
-	if len(s.logBuffer) > s.maxLogs {
-		s.logBuffer = s.logBuffer[len(s.logBuffer)-s.maxLogs:]
-	}
-}
-
 func (s *Server) addModEvent(user, action, detail string) {
 	s.modMu.Lock()
-	defer s.modMu.Unlock()
 	event := modHistoryItem{
-		TS:        time.Now().UTC().Format(time.RFC3339),
-		User:      user,
-		UserName:  user,
-		Group:     "",
-		GroupName: "",
-		Action:    action,
-		DryRun:    false,
-		Detail:    detail,
+		TS:     time.Now().UTC().Format(time.RFC3339),
+		User:   user,
+		Action: action,
+		Detail: detail,
 	}
 	s.modEvents = append(s.modEvents, event)
 	if len(s.modEvents) > s.maxModEvents {
 		s.modEvents = s.modEvents[len(s.modEvents)-s.maxModEvents:]
 	}
-	s.addLog("info", "moderation: "+action+" - "+detail)
+	s.modMu.Unlock()
+	s.audit.Record("administrative", "info", user, "moderation", action, "success", "", "moderation: "+action+" - "+detail, nil)
 }
-
-func toAny(items []any) []any { return items }
 
 // Handler returns an http.Handler with all API routes and middleware.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// API routes (auth required, CORS enabled)
+	// Unauthenticated health probe
+	mux.HandleFunc("/health", s.handleHealth)
+
+	// Authenticated API routes
 	mux.HandleFunc("/status", s.corsAuth(s.handleStatus))
 	mux.HandleFunc("/events", s.corsAuth(s.handleEvents))
 	mux.HandleFunc("/qr", s.corsAuth(s.handleQR))
@@ -1218,19 +1538,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/users/", s.corsAuth(s.handleUserRoutes))
 	mux.HandleFunc("/logs", s.corsAuth(s.handleLogs))
 
-	// Auth routes (no auth required, CORS enabled)
+	// Auth routes (CORS + CSRF origin check)
 	mux.HandleFunc("/auth/login", s.cors(s.handleLogin))
 	mux.HandleFunc("/auth/logout", s.cors(s.handleLogout))
 	mux.HandleFunc("/auth/me", s.cors(s.handleMe))
 
-	// Serve the dashboard HTML at root
+	// Embedded dashboard HTML
 	mux.HandleFunc("/", s.cors(s.handleIndex))
 
 	return mux
 }
-
-// Error sentinels
-var (
-	errAlreadyConnected = errors.New("already connected")
-	errNoQR             = errors.New("no QR available")
-)

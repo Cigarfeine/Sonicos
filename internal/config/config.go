@@ -8,22 +8,41 @@ import (
 )
 
 type Config struct {
-	DatabaseDriver string
-	DatabaseURL    string
-	RedisURL       string
-	Prefix         string
-	Workers        int
-	QueueSize      int
-	LogLevel       string
+	DatabaseDriver     string
+	DatabaseURL        string
+	RedisURL           string
+	Prefix             string
+	Workers            int
+	QueueSize          int
+	LogLevel           string
+	DashboardPassword  string
+	Port               string
+	PortExplicit       bool
+	CORSAllowedOrigins []string
 }
 
 func Load() (Config, error) {
+	rawPort := strings.TrimSpace(os.Getenv("PORT"))
+	port := rawPort
+	if port == "" {
+		port = "8080"
+	} else {
+		p, err := strconv.Atoi(port)
+		if err != nil || p < 1 || p > 65535 {
+			return Config{}, fmt.Errorf("PORT must be an integer between 1 and 65535")
+		}
+	}
+
 	cfg := Config{
-		DatabaseDriver: strings.ToLower(env("DATABASE_DRIVER", "sqlite3")),
-		DatabaseURL:    env("DATABASE_URL", "file:./data/sonicos.db?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000"),
-		RedisURL:       env("REDIS_URL", "redis://localhost:6379/0"),
-		Prefix:         env("BOT_PREFIX", "!"),
-		LogLevel:       strings.ToLower(env("LOG_LEVEL", "info")),
+		DatabaseDriver:     strings.ToLower(env("DATABASE_DRIVER", "sqlite3")),
+		DatabaseURL:        env("DATABASE_URL", "file:./data/sonicos.db?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000"),
+		RedisURL:           env("REDIS_URL", "redis://localhost:6379/0"),
+		Prefix:             env("BOT_PREFIX", "!"),
+		LogLevel:           strings.ToLower(env("LOG_LEVEL", "info")),
+		DashboardPassword:  strings.TrimSpace(os.Getenv("DASHBOARD_PASSWORD")),
+		Port:               port,
+		PortExplicit:       rawPort != "",
+		CORSAllowedOrigins: splitCSV(os.Getenv("CORS_ALLOWED_ORIGINS")),
 	}
 
 	var err error
@@ -73,4 +92,19 @@ func envInt(key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
 	}
 	return parsed, nil
+}
+
+func splitCSV(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			out = append(out, strings.TrimRight(trimmed, "/"))
+		}
+	}
+	return out
 }
