@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -24,6 +25,7 @@ type Bot struct {
 	moderation command.ModerationStore
 	groups     *groupService
 	audioCache *stickerAudioCache
+	fastStore  *fastDeviceContainer
 	workers    int
 	queue      chan *events.Message
 	logger     *slog.Logger
@@ -50,6 +52,24 @@ type Bot struct {
 
 func (b *Bot) SetModerationStore(store command.ModerationStore) {
 	b.moderation = store
+}
+
+// EnableFastStore wraps the underlying whatsmeow device stores with in-memory
+// read-through caches and batched Postgres writes so cross-region database RTT
+// does not stall message decryption, sending, or prekey uploads.
+func (b *Bot) EnableFastStore(ctx context.Context, db *sql.DB) {
+	if b == nil || b.client == nil || b.client.Store == nil || db == nil {
+		return
+	}
+	b.fastStore = attachFastStore(ctx, b.client.Store, db, b.logger)
+}
+
+// FlushStore synchronously flushes any pending cached whatsmeow store writes.
+func (b *Bot) FlushStore(ctx context.Context) error {
+	if b == nil || b.fastStore == nil {
+		return nil
+	}
+	return b.fastStore.Flush(ctx)
 }
 
 // SetEventListener registers a callback invoked on WhatsApp connection, QR, and pairing state changes.
@@ -269,6 +289,11 @@ func (b *Bot) Run(ctx context.Context) error {
 	<-ctx.Done()
 	b.cancelPairingSession()
 	b.client.Disconnect()
+	if b.fastStore != nil {
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		b.fastStore.Close(flushCtx)
+		flushCancel()
+	}
 	return nil
 }
 

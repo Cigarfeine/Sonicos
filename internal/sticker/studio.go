@@ -75,17 +75,34 @@ func (c *Converter) DubSoundSticker(ctx context.Context, visual, audio command.A
 	var exifOffset uint32
 	animated := false
 
-	if visual.Kind == command.MediaSticker && len(visual.Data) <= targetAnimatedBytes {
-		if rebranded, off, injErr := InjectWebpExif(visual.Data, meta, 512, 512); injErr == nil {
-			animated = CountWebpAnimFrames(rebranded) > 1
+	if visual.Kind == command.MediaSticker {
+		isAnimSticker := HasWebpAnimChunk(visual.Data) || CountWebpAnimFrames(visual.Data) > 1
+		tryInject := func(buf []byte) bool {
+			rebranded, off, injErr := InjectWebpExif(buf, meta, 512, 512)
+			if injErr != nil {
+				return false
+			}
+			anim := isAnimSticker || CountWebpAnimFrames(rebranded) > 1
 			maxLimit := MaxStaticBytes
-			if animated {
+			if anim {
 				maxLimit = MaxAnimatedBytes
 			}
 			if len(rebranded) <= maxLimit {
 				webpData = rebranded
 				exifOffset = off
+				animated = anim
+				return true
 			}
+			return false
+		}
+		if !tryInject(visual.Data) && isAnimSticker {
+			if trimmed, ok := TrimAnimatedWebp(visual.Data, MaxAnimatedBytes-512); ok {
+				tryInject(trimmed)
+			}
+		}
+		// ffmpeg's libavcodec webp decoder does not support animated WebP (ANIM/ANMF); fail cleanly rather than crashing in ffmpeg.
+		if len(webpData) == 0 && isAnimSticker {
+			return command.Sticker{}, errors.New("animated WebP sticker exceeds 500 KiB limit even after trimming frames")
 		}
 	}
 

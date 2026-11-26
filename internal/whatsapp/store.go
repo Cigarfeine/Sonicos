@@ -68,5 +68,10 @@ func OpenStoreWithDB(ctx context.Context, driver, address string) (*sqlstore.Con
 		_ = container.Close()
 		return nil, nil, fmt.Errorf("upgrade whatsmeow store: %w", err)
 	}
+	if driver == "pgx" && container.LIDMap != nil {
+		lidCtx, lidCancel := context.WithTimeout(ctx, 10*time.Second)
+		_ = container.LIDMap.FillCache(lidCtx)
+		lidCancel()
+	}
 	return container, db, nil
 }

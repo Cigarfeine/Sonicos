@@ -223,3 +223,98 @@ func CountWebpAnimFrames(webp []byte) int {
 	}
 	return count
 }
+
+// HasWebpAnimChunk reports whether webp contains animation chunks (ANIM/ANMF) or VP8X anim flag.
+func HasWebpAnimChunk(webp []byte) bool {
+	if len(webp) < 12 || string(webp[:4]) != "RIFF" || string(webp[8:12]) != "WEBP" {
+		return false
+	}
+	off := 12
+	for off+8 <= len(webp) {
+		fourcc := string(webp[off : off+4])
+		size := int(binary.LittleEndian.Uint32(webp[off+4 : off+8]))
+		if fourcc == "ANIM" || fourcc == "ANMF" {
+			return true
+		}
+		if fourcc == "VP8X" && size >= 1 && off+8 < len(webp) && (webp[off+8]&0x02) != 0 {
+			return true
+		}
+		if size < 0 {
+			break
+		}
+		padded := size + (size & 1)
+		next := off + 8 + padded
+		if next <= off || next > len(webp) {
+			break
+		}
+		off = next
+	}
+	return false
+}
+
+// TrimAnimatedWebp drops trailing ANMF frames (and strips any existing EXIF chunk)
+// so an oversized animated WebP sticker can still fit within maxBytes without re-encoding.
+func TrimAnimatedWebp(webp []byte, maxBytes int) ([]byte, bool) {
+	if len(webp) < 12 || string(webp[:4]) != "RIFF" || string(webp[8:12]) != "WEBP" {
+		return nil, false
+	}
+	var headerChunks [][]byte
+	var frameChunks [][]byte
+
+	off := 12
+	for off+8 <= len(webp) {
+		fourcc := string(webp[off : off+4])
+		size := int(binary.LittleEndian.Uint32(webp[off+4 : off+8]))
+		if size < 0 {
+			return nil, false
+		}
+		padded := size + (size & 1)
+		end := off + 8 + padded
+		if end <= off || end > len(webp) {
+			break
+		}
+		chunk := make([]byte, end-off)
+		copy(chunk, webp[off:end])
+		off = end
+
+		if fourcc == "EXIF" {
+			continue
+		}
+		if fourcc == "ANMF" {
+			frameChunks = append(frameChunks, chunk)
+		} else {
+			headerChunks = append(headerChunks, chunk)
+		}
+	}
+	if len(frameChunks) == 0 {
+		return nil, false
+	}
+
+	totalLen := 12
+	for _, c := range headerChunks {
+		totalLen += len(c)
+	}
+	kept := 0
+	for _, f := range frameChunks {
+		if totalLen+len(f) > maxBytes {
+			break
+		}
+		totalLen += len(f)
+		kept++
+	}
+	if kept == 0 {
+		return nil, false
+	}
+
+	out := make([]byte, 12, totalLen)
+	copy(out[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(out[4:8], uint32(totalLen-8))
+	copy(out[8:12], "WEBP")
+	for _, c := range headerChunks {
+		out = append(out, c...)
+	}
+	for i := range kept {
+		out = append(out, frameChunks[i]...)
+	}
+	return out, true
+}

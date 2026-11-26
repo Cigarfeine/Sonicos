@@ -77,6 +77,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if cfg.DatabaseDriver == "pgx" {
+		bot.EnableFastStore(ctx, db)
+	}
 
 	var modStore command.ModerationStore
 	modBackend := "redis"
