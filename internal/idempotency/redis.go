@@ -36,6 +36,9 @@ func New(ctx context.Context, address string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse REDIS_URL: %w", err)
 	}
+	if options.DialTimeout == 0 {
+		options.DialTimeout = 750 * time.Millisecond
+	}
 	client := redis.NewClient(options)
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()

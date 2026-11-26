@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SafwanGanz/Sonicos/internal/command"
@@ -11,26 +12,40 @@ import (
 	"go.mau.fi/whatsmeow/types"
 )
 
+const (
+	groupInfoCacheTTL        = 30 * time.Second
+	groupInfoCacheMaxEntries = 500
+)
+
+type cachedGroupInfo struct {
+	info      command.GroupInfo
+	expiresAt time.Time
+}
+
 type groupService struct {
 	client *whatsmeow.Client
+	mu     sync.RWMutex
+	cache  map[string]cachedGroupInfo
 }
 
 func newGroupService(client *whatsmeow.Client) command.GroupService {
+	if gs := newGroupServiceCache(client); gs != nil {
+		return gs
+	}
+	return nil
+}
+
+func newGroupServiceCache(client *whatsmeow.Client) *groupService {
 	if client == nil {
 		return nil
 	}
-	return &groupService{client: client}
+	return &groupService{
+		client: client,
+		cache:  make(map[string]cachedGroupInfo),
+	}
 }
 
-func (g *groupService) GetInfo(ctx context.Context, groupJID string) (command.GroupInfo, error) {
-	jid, err := types.ParseJID(groupJID)
-	if err != nil {
-		return command.GroupInfo{}, fmt.Errorf("parse group JID: %w", err)
-	}
-	info, err := g.client.GetGroupInfo(ctx, jid)
-	if err != nil {
-		return command.GroupInfo{}, err
-	}
+func convertGroupInfo(client *whatsmeow.Client, info *types.GroupInfo) command.GroupInfo {
 	participants := make([]command.GroupParticipant, 0, len(info.Participants))
 	for _, p := range info.Participants {
 		participants = append(participants, command.GroupParticipant{
@@ -41,8 +56,8 @@ func (g *groupService) GetInfo(ctx context.Context, groupJID string) (command.Gr
 		})
 	}
 	var botJID string
-	if g.client.Store != nil && g.client.Store.ID != nil {
-		botJID = g.client.Store.ID.ToNonAD().String()
+	if client != nil && client.Store != nil && client.Store.ID != nil {
+		botJID = client.Store.ID.ToNonAD().String()
 	}
 	return command.GroupInfo{
 		JID:          info.JID.String(),
@@ -56,7 +71,77 @@ func (g *groupService) GetInfo(ctx context.Context, groupJID string) (command.Gr
 		EphemeralSec: info.DisappearingTimer,
 		MemberAddAll: info.MemberAddMode == types.GroupMemberAddModeAllMember,
 		Participants: participants,
-	}, nil
+	}
+}
+
+func (g *groupService) Invalidate(groupJID string) {
+	if g == nil || groupJID == "" {
+		return
+	}
+	g.mu.Lock()
+	delete(g.cache, groupJID)
+	g.mu.Unlock()
+}
+
+func (g *groupService) Prime(info *types.GroupInfo) {
+	if g == nil || info == nil {
+		return
+	}
+	converted := convertGroupInfo(g.client, info)
+	g.putCache(converted.JID, converted)
+}
+
+func (g *groupService) putCache(groupJID string, info command.GroupInfo) {
+	if g == nil || groupJID == "" {
+		return
+	}
+	now := time.Now()
+	g.mu.Lock()
+	if g.cache == nil {
+		g.cache = make(map[string]cachedGroupInfo)
+	}
+	if len(g.cache) >= groupInfoCacheMaxEntries {
+		for k, v := range g.cache {
+			if !now.Before(v.expiresAt) {
+				delete(g.cache, k)
+			}
+		}
+		if len(g.cache) >= groupInfoCacheMaxEntries {
+			clear(g.cache)
+		}
+	}
+	g.cache[groupJID] = cachedGroupInfo{
+		info:      info,
+		expiresAt: now.Add(groupInfoCacheTTL),
+	}
+	g.mu.Unlock()
+}
+
+func (g *groupService) GetInfo(ctx context.Context, groupJID string) (command.GroupInfo, error) {
+	now := time.Now()
+	g.mu.RLock()
+	if g.cache != nil {
+		if entry, ok := g.cache[groupJID]; ok && now.Before(entry.expiresAt) {
+			g.mu.RUnlock()
+			return entry.info, nil
+		}
+	}
+	g.mu.RUnlock()
+
+	if g.client == nil {
+		return command.GroupInfo{}, fmt.Errorf("WhatsApp client unavailable")
+	}
+	jid, err := types.ParseJID(groupJID)
+	if err != nil {
+		return command.GroupInfo{}, fmt.Errorf("parse group JID: %w", err)
+	}
+	info, err := g.client.GetGroupInfo(ctx, jid)
+	if err != nil {
+		return command.GroupInfo{}, err
+	}
+	converted := convertGroupInfo(g.client, info)
+	g.putCache(groupJID, converted)
+	return converted, nil
 }
 
 func (g *groupService) UpdateParticipants(ctx context.Context, groupJID string, targets []string, action command.ParticipantAction) error {
@@ -85,6 +170,7 @@ func (g *groupService) UpdateParticipants(ctx context.Context, groupJID string, 
 	if err != nil {
 		return err
 	}
+	g.Invalidate(groupJID)
 	for _, res := range results {
 		if res.Error != 0 {
 			return fmt.Errorf("failed for %s (code %d)", res.JID.User, res.Error)
@@ -98,7 +184,11 @@ func (g *groupService) SetName(ctx context.Context, groupJID, name string) error
 	if err != nil {
 		return err
 	}
-	return g.client.SetGroupName(ctx, jid, name)
+	if err := g.client.SetGroupName(ctx, jid, name); err != nil {
+		return err
+	}
+	g.Invalidate(groupJID)
+	return nil
 }
 
 func (g *groupService) SetDescription(ctx context.Context, groupJID, description string) error {
@@ -106,7 +196,11 @@ func (g *groupService) SetDescription(ctx context.Context, groupJID, description
 	if err != nil {
 		return err
 	}
-	return g.client.SetGroupDescription(ctx, jid, description)
+	if err := g.client.SetGroupDescription(ctx, jid, description); err != nil {
+		return err
+	}
+	g.Invalidate(groupJID)
+	return nil
 }
 
 func (g *groupService) SetPhoto(ctx context.Context, groupJID string, image []byte) error {
@@ -114,8 +208,11 @@ func (g *groupService) SetPhoto(ctx context.Context, groupJID string, image []by
 	if err != nil {
 		return err
 	}
-	_, err = g.client.SetGroupPhoto(ctx, jid, image)
-	return err
+	if _, err = g.client.SetGroupPhoto(ctx, jid, image); err != nil {
+		return err
+	}
+	g.Invalidate(groupJID)
+	return nil
 }
 
 func (g *groupService) SetAnnounce(ctx context.Context, groupJID string, announce bool) error {
@@ -123,7 +220,11 @@ func (g *groupService) SetAnnounce(ctx context.Context, groupJID string, announc
 	if err != nil {
 		return err
 	}
-	return g.client.SetGroupAnnounce(ctx, jid, announce)
+	if err := g.client.SetGroupAnnounce(ctx, jid, announce); err != nil {
+		return err
+	}
+	g.Invalidate(groupJID)
+	return nil
 }
 
 func (g *groupService) SetLocked(ctx context.Context, groupJID string, locked bool) error {
@@ -131,7 +232,11 @@ func (g *groupService) SetLocked(ctx context.Context, groupJID string, locked bo
 	if err != nil {
 		return err
 	}
-	return g.client.SetGroupLocked(ctx, jid, locked)
+	if err := g.client.SetGroupLocked(ctx, jid, locked); err != nil {
+		return err
+	}
+	g.Invalidate(groupJID)
+	return nil
 }
 
 func (g *groupService) SetJoinApproval(ctx context.Context, groupJID string, requireApproval bool) error {
@@ -139,7 +244,11 @@ func (g *groupService) SetJoinApproval(ctx context.Context, groupJID string, req
 	if err != nil {
 		return err
 	}
-	return g.client.SetGroupJoinApprovalMode(ctx, jid, requireApproval)
+	if err := g.client.SetGroupJoinApprovalMode(ctx, jid, requireApproval); err != nil {
+		return err
+	}
+	g.Invalidate(groupJID)
+	return nil
 }
 
 func (g *groupService) SetMemberAddMode(ctx context.Context, groupJID string, allowAll bool) error {
@@ -151,7 +260,11 @@ func (g *groupService) SetMemberAddMode(ctx context.Context, groupJID string, al
 	if allowAll {
 		mode = types.GroupMemberAddModeAllMember
 	}
-	return g.client.SetGroupMemberAddMode(ctx, jid, mode)
+	if err := g.client.SetGroupMemberAddMode(ctx, jid, mode); err != nil {
+		return err
+	}
+	g.Invalidate(groupJID)
+	return nil
 }
 
 func (g *groupService) SetDisappearing(ctx context.Context, groupJID string, seconds uint32) error {
@@ -159,7 +272,11 @@ func (g *groupService) SetDisappearing(ctx context.Context, groupJID string, sec
 	if err != nil {
 		return err
 	}
-	return g.client.SetDisappearingTimer(ctx, jid, time.Duration(seconds)*time.Second, time.Now())
+	if err := g.client.SetDisappearingTimer(ctx, jid, time.Duration(seconds)*time.Second, time.Now()); err != nil {
+		return err
+	}
+	g.Invalidate(groupJID)
+	return nil
 }
 
 func (g *groupService) GetInviteLink(ctx context.Context, groupJID string, reset bool) (string, error) {
@@ -228,7 +345,11 @@ func (g *groupService) Leave(ctx context.Context, groupJID string) error {
 	if err != nil {
 		return err
 	}
-	return g.client.LeaveGroup(ctx, jid)
+	if err := g.client.LeaveGroup(ctx, jid); err != nil {
+		return err
+	}
+	g.Invalidate(groupJID)
+	return nil
 }
 
 func parseTargetJIDs(targets []string) ([]types.JID, error) {

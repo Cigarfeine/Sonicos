@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/SafwanGanz/Sonicos/internal/command"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -33,6 +37,51 @@ func (b *Bot) rememberSoundSticker(ctx context.Context, chatJID, messageID strin
 	b.audioCache.Remember(ctx, b.moderation, chatJID, messageID, msg)
 }
 
+var quotedAudioCommands = map[string]struct{}{
+	"steal":        {},
+	"take":         {},
+	"rebrand":      {},
+	"extract":      {},
+	"toaudio":      {},
+	"mp3":          {},
+	"tovideo":      {},
+	"mp4":          {},
+	"dub":          {},
+	"audiosticker": {},
+	"stdio":        {},
+	"sticker":      {},
+	"s":            {},
+	"sreact":       {},
+	"sr":           {},
+	"bansticker":   {},
+	"blsticker":    {},
+	"blocksticker": {},
+	"unbansticker": {},
+	"unblsticker":  {},
+	"allowsticker": {},
+	"mix":          {},
+	"merge":        {},
+	"voice":        {},
+	"sound":        {},
+}
+
+func maybeNeedsQuotedStickerAudio(text string) bool {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) == 0 {
+		return false
+	}
+	first := fields[0]
+	r, _ := utf8.DecodeRuneInString(first)
+	if unicode.IsLetter(r) || unicode.IsDigit(r) {
+		return false
+	}
+	cmdWord := strings.TrimFunc(strings.ToLower(first), func(ch rune) bool {
+		return !unicode.IsLetter(ch) && !unicode.IsDigit(ch)
+	})
+	_, ok := quotedAudioCommands[cmdWord]
+	return ok
+}
+
 func (b *Bot) hydrateQuotedSoundSticker(ctx context.Context, msg *command.Message) {
 	if b.audioCache == nil || msg == nil || msg.StickerAudioSource != nil {
 		return
@@ -44,7 +93,10 @@ func (b *Bot) hydrateQuotedSoundSticker(ctx context.Context, msg *command.Messag
 	if msg.QuotedSticker != nil {
 		quotedSHA = msg.QuotedSticker.FileSHA256
 	}
-	cachedAudio := b.audioCache.Lookup(ctx, b.moderation, msg.Chat, msg.QuotedMessageID, quotedSHA)
+	cachedAudio := b.audioCache.LookupMemory(msg.Chat, msg.QuotedMessageID, quotedSHA)
+	if cachedAudio == nil && (msg.QuotedSticker != nil || maybeNeedsQuotedStickerAudio(msg.Text)) {
+		cachedAudio = b.audioCache.Lookup(ctx, b.moderation, msg.Chat, msg.QuotedMessageID, quotedSHA)
+	}
 	if cachedAudio == nil {
 		return
 	}
@@ -62,6 +114,7 @@ func (b *Bot) hydrateQuotedSoundSticker(ctx context.Context, msg *command.Messag
 }
 
 func (b *Bot) processMessage(ctx context.Context, evt *events.Message) error {
+	start := time.Now()
 	b.rememberSoundSticker(ctx, evt.Info.Chat.String(), string(evt.Info.ID), evt.Message)
 
 	message, ok := DecodeMessage(b.client, evt)
@@ -69,6 +122,9 @@ func (b *Bot) processMessage(ctx context.Context, evt *events.Message) error {
 		return nil
 	}
 	message.ModerationStore = b.moderation
+	if b.groups != nil {
+		message.GroupService = b.groups
+	}
 	b.hydrateQuotedSoundSticker(ctx, &message)
 
 	reply := func(ctx context.Context, response command.Reply) error {
@@ -96,9 +152,32 @@ func (b *Bot) processMessage(ctx context.Context, evt *events.Message) error {
 		if err != nil {
 			return err
 		}
+		sendStart := time.Now()
 		resp, err := b.client.SendMessage(ctx, evt.Info.Chat, outgoing)
+		sendElapsed := time.Since(sendStart)
+		totalElapsed := time.Since(start)
 		if err != nil {
 			return fmt.Errorf("send quoted reply: %w", err)
+		}
+		if b.logger != nil {
+			attrs := []any{
+				"chat", evt.Info.Chat.String(),
+				"message_id", string(evt.Info.ID),
+				"total_ms", totalElapsed.Milliseconds(),
+				"send_ms", sendElapsed.Milliseconds(),
+				"wa_queue_ms", resp.DebugTimings.Queue.Milliseconds(),
+				"wa_get_devices_ms", resp.DebugTimings.GetDevices.Milliseconds(),
+				"wa_group_encrypt_ms", resp.DebugTimings.GroupEncrypt.Milliseconds(),
+				"wa_peer_encrypt_ms", resp.DebugTimings.PeerEncrypt.Milliseconds(),
+				"wa_send_ms", resp.DebugTimings.Send.Milliseconds(),
+				"wa_resp_ms", resp.DebugTimings.Resp.Milliseconds(),
+				"wa_retry_ms", resp.DebugTimings.Retry.Milliseconds(),
+			}
+			if totalElapsed >= 500*time.Millisecond {
+				b.logger.Info("slow WhatsApp reply timing", attrs...)
+			} else {
+				b.logger.Debug("WhatsApp reply timing", attrs...)
+			}
 		}
 		b.rememberSoundSticker(ctx, evt.Info.Chat.String(), string(resp.ID), outgoing)
 		return nil

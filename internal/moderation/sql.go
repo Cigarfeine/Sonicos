@@ -15,18 +15,43 @@ import (
 	"github.com/SafwanGanz/Sonicos/internal/command"
 )
 
+const (
+	sqlCacheTTL        = 60 * time.Second
+	sqlCacheMaxEntries = 2000
+)
+
 type rateBucket struct {
 	count     int
+	expiresAt time.Time
+}
+
+type cachedShields struct {
+	shields   command.GroupShields
+	expiresAt time.Time
+}
+
+type cachedBanned struct {
+	byFile    map[string]command.BannedSticker
+	byAudio   map[string]command.BannedSticker
+	expiresAt time.Time
+}
+
+type cachedSeen struct {
+	info      command.StickerInfo
 	expiresAt time.Time
 }
 
 // SQLStore persists moderation state, shields, studio staging, audio cache, and !sreact
 // libraries in SQLite3 or PostgreSQL (including Supabase) when Redis is unavailable.
 type SQLStore struct {
-	db         *sql.DB
-	isPostgres bool
-	rateMu     sync.Mutex
-	rates      map[string]rateBucket
+	db           *sql.DB
+	isPostgres   bool
+	rateMu       sync.Mutex
+	rates        map[string]rateBucket
+	cacheMu      sync.RWMutex
+	shieldsCache map[string]cachedShields
+	bannedCache  map[string]cachedBanned
+	seenCache    map[string]cachedSeen
 }
 
 // NewSQLStore initializes the shared SQL tables on db and returns a SQL-backed ModerationStore.
@@ -36,9 +61,12 @@ func NewSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, err
 	}
 	lower := strings.ToLower(strings.TrimSpace(driver))
 	store := &SQLStore{
-		db:         db,
-		isPostgres: lower == "pgx" || strings.HasPrefix(lower, "postgres"),
-		rates:      make(map[string]rateBucket),
+		db:           db,
+		isPostgres:   lower == "pgx" || strings.HasPrefix(lower, "postgres"),
+		rates:        make(map[string]rateBucket),
+		shieldsCache: make(map[string]cachedShields),
+		bannedCache:  make(map[string]cachedBanned),
+		seenCache:    make(map[string]cachedSeen),
 	}
 	if err := store.initSchema(ctx); err != nil {
 		return nil, err
@@ -115,6 +143,72 @@ func (s *SQLStore) rebind(query string) string {
 	return b.String()
 }
 
+func pruneCacheMap[V any](m map[string]V, expiresFn func(V) time.Time, now time.Time) {
+	if len(m) < sqlCacheMaxEntries {
+		return
+	}
+	for k, v := range m {
+		if !now.Before(expiresFn(v)) {
+			delete(m, k)
+		}
+	}
+	if len(m) >= sqlCacheMaxEntries {
+		clear(m)
+	}
+}
+
+func (s *SQLStore) invalidateBanned(groupJID string) {
+	s.cacheMu.Lock()
+	delete(s.bannedCache, groupJID)
+	s.cacheMu.Unlock()
+}
+
+func (s *SQLStore) loadBannedGroup(ctx context.Context, groupJID string) (cachedBanned, error) {
+	now := time.Now()
+	s.cacheMu.RLock()
+	if s.bannedCache != nil {
+		if entry, ok := s.bannedCache[groupJID]; ok && now.Before(entry.expiresAt) {
+			s.cacheMu.RUnlock()
+			return entry, nil
+		}
+	}
+	s.cacheMu.RUnlock()
+
+	entries, err := s.ListBannedStickers(ctx, groupJID)
+	if err != nil {
+		return cachedBanned{}, err
+	}
+
+	byFile := make(map[string]command.BannedSticker, len(entries))
+	byAudio := make(map[string]command.BannedSticker, len(entries))
+	for _, entry := range entries {
+		if fh := normHash(entry.FileSHA256); fh != "" {
+			if _, exists := byFile[fh]; !exists {
+				byFile[fh] = entry
+			}
+		}
+		if ah := normHash(entry.AudioSHA256); ah != "" {
+			if _, exists := byAudio[ah]; !exists {
+				byAudio[ah] = entry
+			}
+		}
+	}
+
+	cached := cachedBanned{
+		byFile:    byFile,
+		byAudio:   byAudio,
+		expiresAt: time.Now().Add(sqlCacheTTL),
+	}
+	s.cacheMu.Lock()
+	if s.bannedCache == nil {
+		s.bannedCache = make(map[string]cachedBanned)
+	}
+	pruneCacheMap(s.bannedCache, func(v cachedBanned) time.Time { return v.expiresAt }, time.Now())
+	s.bannedCache[groupJID] = cached
+	s.cacheMu.Unlock()
+	return cached, nil
+}
+
 func (s *SQLStore) BanSticker(ctx context.Context, groupJID string, entry command.BannedSticker) error {
 	entry.FileSHA256 = normHash(entry.FileSHA256)
 	entry.AudioSHA256 = normHash(entry.AudioSHA256)
@@ -133,6 +227,7 @@ func (s *SQLStore) BanSticker(ctx context.Context, groupJID string, entry comman
 	if _, err := s.db.ExecContext(ctx, query, groupJID, entry.FileSHA256, entry.AudioSHA256, entry.Reason, entry.AddedBy, entry.AddedAt); err != nil {
 		return fmt.Errorf("store banned sticker: %w", err)
 	}
+	s.invalidateBanned(groupJID)
 	return nil
 }
 
@@ -154,6 +249,9 @@ func (s *SQLStore) UnbanSticker(ctx context.Context, groupJID, fileSHA256, audio
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("check deleted banned sticker rows: %w", err)
+	}
+	if n > 0 {
+		s.invalidateBanned(groupJID)
 	}
 	return n > 0, nil
 }
@@ -184,34 +282,23 @@ func (s *SQLStore) UnbanStickerByPrefix(ctx context.Context, groupJID, hashPrefi
 }
 
 func (s *SQLStore) IsStickerBanned(ctx context.Context, groupJID, fileSHA256, audioSHA256 string) (command.BannedSticker, bool, error) {
-	if fh := normHash(fileSHA256); fh != "" {
-		var entry command.BannedSticker
-		err := s.db.QueryRowContext(ctx, s.rebind(`
-			SELECT file_sha256, audio_sha256, reason, added_by, added_at
-			FROM sonicos_banned_stickers
-			WHERE group_jid = ? AND file_sha256 = ?
-			LIMIT 1
-		`), groupJID, fh).Scan(&entry.FileSHA256, &entry.AudioSHA256, &entry.Reason, &entry.AddedBy, &entry.AddedAt)
-		if err == nil {
+	fh := normHash(fileSHA256)
+	ah := normHash(audioSHA256)
+	if fh == "" && ah == "" {
+		return command.BannedSticker{}, false, nil
+	}
+	cached, err := s.loadBannedGroup(ctx, groupJID)
+	if err != nil {
+		return command.BannedSticker{}, false, err
+	}
+	if fh != "" {
+		if entry, ok := cached.byFile[fh]; ok {
 			return entry, true, nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return command.BannedSticker{}, false, fmt.Errorf("lookup banned file hash: %w", err)
 		}
 	}
-	if ah := normHash(audioSHA256); ah != "" {
-		var entry command.BannedSticker
-		err := s.db.QueryRowContext(ctx, s.rebind(`
-			SELECT file_sha256, audio_sha256, reason, added_by, added_at
-			FROM sonicos_banned_stickers
-			WHERE group_jid = ? AND audio_sha256 = ?
-			LIMIT 1
-		`), groupJID, ah).Scan(&entry.FileSHA256, &entry.AudioSHA256, &entry.Reason, &entry.AddedBy, &entry.AddedAt)
-		if err == nil {
+	if ah != "" {
+		if entry, ok := cached.byAudio[ah]; ok {
 			return entry, true, nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return command.BannedSticker{}, false, fmt.Errorf("lookup banned audio hash: %w", err)
 		}
 	}
 	return command.BannedSticker{}, false, nil
@@ -281,6 +368,10 @@ func (s *SQLStore) ResetStrikes(ctx context.Context, groupJID, userID string) er
 	return nil
 }
 
+func seenCacheKey(groupJID, messageID string) string {
+	return groupJID + "\x00" + messageID
+}
+
 func (s *SQLStore) RememberSticker(ctx context.Context, groupJID, messageID string, info command.StickerInfo) error {
 	if strings.TrimSpace(groupJID) == "" || strings.TrimSpace(messageID) == "" {
 		return nil
@@ -300,6 +391,18 @@ func (s *SQLStore) RememberSticker(ctx context.Context, groupJID, messageID stri
 	`), groupJID, messageID, string(raw), expiresAt); err != nil {
 		return fmt.Errorf("remember sticker: %w", err)
 	}
+	key := seenCacheKey(groupJID, messageID)
+	now := time.Now()
+	s.cacheMu.Lock()
+	if s.seenCache == nil {
+		s.seenCache = make(map[string]cachedSeen)
+	}
+	pruneCacheMap(s.seenCache, func(v cachedSeen) time.Time { return v.expiresAt }, now)
+	s.seenCache[key] = cachedSeen{
+		info:      info,
+		expiresAt: now.Add(sqlCacheTTL),
+	}
+	s.cacheMu.Unlock()
 	return nil
 }
 
@@ -307,6 +410,17 @@ func (s *SQLStore) LookupSticker(ctx context.Context, groupJID, messageID string
 	if strings.TrimSpace(groupJID) == "" || strings.TrimSpace(messageID) == "" {
 		return command.StickerInfo{}, false, nil
 	}
+	key := seenCacheKey(groupJID, messageID)
+	now := time.Now()
+	s.cacheMu.RLock()
+	if s.seenCache != nil {
+		if entry, ok := s.seenCache[key]; ok && now.Before(entry.expiresAt) {
+			s.cacheMu.RUnlock()
+			return entry.info, true, nil
+		}
+	}
+	s.cacheMu.RUnlock()
+
 	var payload string
 	var expiresAt int64
 	err := s.db.QueryRowContext(ctx, s.rebind(`
@@ -326,10 +440,31 @@ func (s *SQLStore) LookupSticker(ctx context.Context, groupJID, messageID string
 	if err := json.Unmarshal([]byte(payload), &info); err != nil {
 		return command.StickerInfo{}, false, nil
 	}
+	now = time.Now()
+	s.cacheMu.Lock()
+	if s.seenCache == nil {
+		s.seenCache = make(map[string]cachedSeen)
+	}
+	pruneCacheMap(s.seenCache, func(v cachedSeen) time.Time { return v.expiresAt }, now)
+	s.seenCache[key] = cachedSeen{
+		info:      info,
+		expiresAt: now.Add(sqlCacheTTL),
+	}
+	s.cacheMu.Unlock()
 	return info, true, nil
 }
 
 func (s *SQLStore) GetShields(ctx context.Context, groupJID string) (command.GroupShields, error) {
+	now := time.Now()
+	s.cacheMu.RLock()
+	if s.shieldsCache != nil {
+		if entry, ok := s.shieldsCache[groupJID]; ok && now.Before(entry.expiresAt) {
+			s.cacheMu.RUnlock()
+			return entry.shields, nil
+		}
+	}
+	s.cacheMu.RUnlock()
+
 	shields := command.GroupShields{AntiLoudDB: defaultAntiLoudDB}
 	rows, err := s.db.QueryContext(ctx, s.rebind(`
 		SELECT field, value FROM sonicos_group_shields WHERE group_jid = ?
@@ -360,6 +495,18 @@ func (s *SQLStore) GetShields(ctx context.Context, groupJID string) (command.Gro
 			shields.AntiLoudDB = parsed
 		}
 	}
+
+	now = time.Now()
+	s.cacheMu.Lock()
+	if s.shieldsCache == nil {
+		s.shieldsCache = make(map[string]cachedShields)
+	}
+	pruneCacheMap(s.shieldsCache, func(v cachedShields) time.Time { return v.expiresAt }, now)
+	s.shieldsCache[groupJID] = cachedShields{
+		shields:   shields,
+		expiresAt: now.Add(sqlCacheTTL),
+	}
+	s.cacheMu.Unlock()
 	return shields, nil
 }
 
@@ -372,6 +519,9 @@ func (s *SQLStore) SetShield(ctx context.Context, groupJID, field, value string)
 	`), groupJID, field, value); err != nil {
 		return fmt.Errorf("set group shield %q: %w", field, err)
 	}
+	s.cacheMu.Lock()
+	delete(s.shieldsCache, groupJID)
+	s.cacheMu.Unlock()
 	return nil
 }
 

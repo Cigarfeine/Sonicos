@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/SafwanGanz/Sonicos/internal/command"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -60,20 +61,39 @@ func (c *stickerAudioCache) Remember(ctx context.Context, store command.Moderati
 
 	for _, key := range keys {
 		c.putMemory(key, raw)
-		if store != nil {
-			_ = store.SaveStage(ctx, "stickeraudio:"+key, command.StagedMedia{
-				Kind:     command.MediaAudio,
-				MIMEType: "application/x-protobuf",
-				Data:     raw,
-			}, stickerAudioRedisTTL)
-		}
+	}
+	if store != nil {
+		cp := append([]byte(nil), raw...)
+		keysCopy := append([]string(nil), keys...)
+		go func() {
+			saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			for _, key := range keysCopy {
+				_ = store.SaveStage(saveCtx, "stickeraudio:"+key, command.StagedMedia{
+					Kind:     command.MediaAudio,
+					MIMEType: "application/x-protobuf",
+					Data:     cp,
+				}, stickerAudioRedisTTL)
+			}
+		}()
 	}
 }
 
-func (c *stickerAudioCache) Lookup(ctx context.Context, store command.ModerationStore, chatJID, quotedMessageID, stickerFileSHA256 string) *waE2E.AudioMessage {
+func (c *stickerAudioCache) LookupMemory(chatJID, quotedMessageID, stickerFileSHA256 string) *waE2E.AudioMessage {
 	if c == nil {
 		return nil
 	}
+	for _, key := range audioCacheKeys(chatJID, quotedMessageID, stickerFileSHA256) {
+		if raw := c.getMemory(key); len(raw) > 0 {
+			if audio := decodeCachedAudio(raw); audio != nil {
+				return audio
+			}
+		}
+	}
+	return nil
+}
+
+func audioCacheKeys(chatJID, quotedMessageID, stickerFileSHA256 string) []string {
 	var keys []string
 	chatJID = strings.TrimSpace(chatJID)
 	quotedMessageID = strings.TrimSpace(quotedMessageID)
@@ -83,8 +103,14 @@ func (c *stickerAudioCache) Lookup(ctx context.Context, store command.Moderation
 	if sha := strings.ToLower(strings.TrimSpace(stickerFileSHA256)); sha != "" {
 		keys = append(keys, "sha:"+sha)
 	}
+	return keys
+}
 
-	for _, key := range keys {
+func (c *stickerAudioCache) Lookup(ctx context.Context, store command.ModerationStore, chatJID, quotedMessageID, stickerFileSHA256 string) *waE2E.AudioMessage {
+	if c == nil {
+		return nil
+	}
+	for _, key := range audioCacheKeys(chatJID, quotedMessageID, stickerFileSHA256) {
 		if raw := c.getMemory(key); len(raw) > 0 {
 			if audio := decodeCachedAudio(raw); audio != nil {
 				return audio

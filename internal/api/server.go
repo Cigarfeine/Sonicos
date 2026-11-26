@@ -27,12 +27,13 @@ import (
 )
 
 const (
-	sessionCookieName = "sonicos_session"
-	sessionTTL        = 7 * 24 * time.Hour
-	maxSessions       = 64
-	rateLimitMaxFails = 5
-	rateLimitWindow   = 5 * time.Minute
-	sseHeartbeat      = 25 * time.Second
+	sessionCookieName       = "sonicos_session"
+	sessionTTL              = 7 * 24 * time.Hour
+	maxSessions             = 64
+	rateLimitMaxFails       = 5
+	globalRateLimitMaxFails = 25
+	rateLimitWindow         = 5 * time.Minute
+	sseHeartbeat            = 25 * time.Second
 )
 
 // BotClient abstracts the WhatsApp bot operations exposed through the dashboard API.
@@ -66,8 +67,9 @@ type Server struct {
 	sessionMu sync.RWMutex
 	sessions  map[string]time.Time
 
-	rateMu        sync.Mutex
-	loginAttempts map[string][]time.Time
+	rateMu              sync.Mutex
+	loginAttempts       map[string][]time.Time
+	globalLoginAttempts []time.Time
 
 	clientsMu sync.Mutex
 	clients   map[chan []byte]struct{}
@@ -501,6 +503,24 @@ func (s *Server) revokeSession(token string) {
 	s.sessionMu.Unlock()
 }
 
+func pruneAttempts(attempts []time.Time, cutoff time.Time) []time.Time {
+	pruned := attempts[:0]
+	for _, ts := range attempts {
+		if ts.After(cutoff) {
+			pruned = append(pruned, ts)
+		}
+	}
+	return pruned
+}
+
+func retryAfterFrom(attempts []time.Time, now time.Time) int {
+	retryAfter := int(attempts[0].Add(rateLimitWindow).Sub(now).Seconds()) + 1
+	if retryAfter < 1 {
+		return 1
+	}
+	return retryAfter
+}
+
 func (s *Server) checkLoginRateLimit(ip string) (bool, int) {
 	if ip == "" {
 		ip = "unknown"
@@ -511,24 +531,19 @@ func (s *Server) checkLoginRateLimit(ip string) (bool, int) {
 	s.rateMu.Lock()
 	defer s.rateMu.Unlock()
 
-	attempts := s.loginAttempts[ip]
-	pruned := attempts[:0]
-	for _, ts := range attempts {
-		if ts.After(cutoff) {
-			pruned = append(pruned, ts)
-		}
+	s.globalLoginAttempts = pruneAttempts(s.globalLoginAttempts, cutoff)
+	if len(s.globalLoginAttempts) >= globalRateLimitMaxFails {
+		return true, retryAfterFrom(s.globalLoginAttempts, now)
 	}
+
+	pruned := pruneAttempts(s.loginAttempts[ip], cutoff)
 	if len(pruned) == 0 {
 		delete(s.loginAttempts, ip)
 		return false, 0
 	}
 	s.loginAttempts[ip] = pruned
 	if len(pruned) >= rateLimitMaxFails {
-		retryAfter := int(pruned[0].Add(rateLimitWindow).Sub(now).Seconds()) + 1
-		if retryAfter < 1 {
-			retryAfter = 1
-		}
-		return true, retryAfter
+		return true, retryAfterFrom(pruned, now)
 	}
 	return false, 0
 }
@@ -543,15 +558,8 @@ func (s *Server) recordLoginFailure(ip string) {
 	s.rateMu.Lock()
 	defer s.rateMu.Unlock()
 
-	attempts := s.loginAttempts[ip]
-	pruned := make([]time.Time, 0, len(attempts)+1)
-	for _, ts := range attempts {
-		if ts.After(cutoff) {
-			pruned = append(pruned, ts)
-		}
-	}
-	pruned = append(pruned, now)
-	s.loginAttempts[ip] = pruned
+	s.globalLoginAttempts = append(pruneAttempts(s.globalLoginAttempts, cutoff), now)
+	s.loginAttempts[ip] = append(pruneAttempts(s.loginAttempts[ip], cutoff), now)
 }
 
 func (s *Server) clearLoginFailures(ip string) {

@@ -3,7 +3,9 @@ package moderation
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/SafwanGanz/Sonicos/internal/command"
@@ -181,4 +183,83 @@ func TestSQLStoreShieldsSeenStagingRateAndReactionLibrary(t *testing.T) {
 	if err := s.SaveReactionSticker(ctx, "global", "🔥", command.SavedReactionSticker{Data: make([]byte, maxReactionStickerBytes+1)}); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("expected oversized reaction sticker error, got %v", err)
 	}
+}
+
+func TestSQLStoreCachingInvalidationAndConcurrency(t *testing.T) {
+	s := openTestSQLStore(t)
+	ctx := context.Background()
+	group := "1203630009@g.us"
+
+	// 1. GetShields cache hit & SetShield invalidation
+	if err := s.SetShield(ctx, group, "anti_link", "1"); err != nil {
+		t.Fatalf("SetShield: %v", err)
+	}
+	sh, err := s.GetShields(ctx, group)
+	if err != nil || !sh.AntiLink {
+		t.Fatalf("GetShields = %+v, err=%v", sh, err)
+	}
+	// Mutate underlying DB directly to prove GetShields serves from memory cache.
+	if _, err := s.db.ExecContext(ctx, `UPDATE sonicos_group_shields SET value = '0' WHERE group_jid = ? AND field = 'anti_link'`, group); err != nil {
+		t.Fatalf("direct SQL update: %v", err)
+	}
+	shCached, err := s.GetShields(ctx, group)
+	if err != nil || !shCached.AntiLink {
+		t.Fatalf("expected cached AntiLink=true before invalidation, got %+v, err=%v", shCached, err)
+	}
+	// SetShield must invalidate the cache so updated DB rows are read cleanly.
+	if err := s.SetShield(ctx, group, "anti_spam", "1"); err != nil {
+		t.Fatalf("SetShield anti_spam: %v", err)
+	}
+	shRefreshed, err := s.GetShields(ctx, group)
+	if err != nil || shRefreshed.AntiLink || !shRefreshed.AntiSpam {
+		t.Fatalf("expected invalidated shields (AntiLink=false, AntiSpam=true), got %+v, err=%v", shRefreshed, err)
+	}
+
+	// 2. IsStickerBanned cache hit & BanSticker/UnbanSticker invalidation
+	if err := s.BanSticker(ctx, group, command.BannedSticker{FileSHA256: "feedbeef01", Reason: "test"}); err != nil {
+		t.Fatalf("BanSticker: %v", err)
+	}
+	if _, ok, err := s.IsStickerBanned(ctx, group, "feedbeef01", ""); err != nil || !ok {
+		t.Fatalf("IsStickerBanned = ok:%v err:%v", ok, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM sonicos_banned_stickers WHERE group_jid = ?`, group); err != nil {
+		t.Fatalf("direct delete banned: %v", err)
+	}
+	if _, ok, err := s.IsStickerBanned(ctx, group, "feedbeef01", ""); err != nil || !ok {
+		t.Fatalf("expected cached ban match after direct DB delete, got ok:%v err:%v", ok, err)
+	}
+	if err := s.BanSticker(ctx, group, command.BannedSticker{FileSHA256: "feedbeef02", Reason: "new"}); err != nil {
+		t.Fatalf("BanSticker 2: %v", err)
+	}
+	if _, ok, err := s.IsStickerBanned(ctx, group, "feedbeef01", ""); err != nil || ok {
+		t.Fatalf("expected cache invalidation to drop deleted feedbeef01, got ok:%v err:%v", ok, err)
+	}
+
+	// 3. RememberSticker updates seenCache & LookupSticker hits cache
+	if err := s.RememberSticker(ctx, group, "seen-1", command.StickerInfo{FileSHA256: "CAFEBABE"}); err != nil {
+		t.Fatalf("RememberSticker: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM sonicos_seen_stickers WHERE group_jid = ?`, group); err != nil {
+		t.Fatalf("direct delete seen: %v", err)
+	}
+	st, ok, err := s.LookupSticker(ctx, group, "seen-1")
+	if err != nil || !ok || st.FileSHA256 != "cafebabe" {
+		t.Fatalf("expected cached seen sticker, got %+v ok=%v err=%v", st, ok, err)
+	}
+
+	// 4. Concurrent access under -race
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := range 10 {
+				_, _ = s.GetShields(ctx, group)
+				_, _, _ = s.IsStickerBanned(ctx, group, "feedbeef02", "")
+				_ = s.RememberSticker(ctx, group, fmt.Sprintf("m-%d-%d", id, j), command.StickerInfo{FileSHA256: "deadbeef"})
+				_, _, _ = s.LookupSticker(ctx, group, fmt.Sprintf("m-%d-%d", id, j))
+			}
+		}(i)
+	}
+	wg.Wait()
 }

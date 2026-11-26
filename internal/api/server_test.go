@@ -300,3 +300,35 @@ func TestDisabledHandler(t *testing.T) {
 		t.Fatalf("GET / disabled status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestLoginGlobalRateLimitMitigatesXFFSpoofing(t *testing.T) {
+	bot := &fakeBot{state: "qr"}
+	srv, _ := newTestServer(bot, "StrongPass99", nil)
+	h := srv.Handler()
+
+	for i := range globalRateLimitMaxFails {
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"password":"wrong"}`))
+		req.RemoteAddr = "198.51.100.1:4321"
+		req.Header.Set("X-Forwarded-For", "198.51.100."+string(rune('1'+i%9))+", 10.0.0.1")
+		if i >= 9 {
+			req.Header.Set("X-Forwarded-For", "198.51.101."+string(rune('1'+i%9))+", 10.0.0.1")
+		}
+		if i >= 18 {
+			req.Header.Set("X-Forwarded-For", "198.51.102."+string(rune('1'+i%9))+", 10.0.0.1")
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status = %d, want 401", i+1, rec.Code)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"password":"StrongPass99"}`))
+	req.RemoteAddr = "198.51.100.1:4321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.250")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("spoofed XFF attempt after global limit = %d, want 429", rec.Code)
+	}
+}

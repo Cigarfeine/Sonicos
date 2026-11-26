@@ -57,6 +57,12 @@ func OpenStoreWithDB(ctx context.Context, driver, address string) (*sqlstore.Con
 		return nil, nil, fmt.Errorf("connect to %s database: %w", driver, err)
 	}
 
+	if driver == "sqlite3" {
+		pragmaCtx, pragmaCancel := context.WithTimeout(ctx, 5*time.Second)
+		_, _ = db.ExecContext(pragmaCtx, "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;")
+		pragmaCancel()
+	}
+
 	container := sqlstore.NewWithDB(db, driver, nil)
 	if err := container.Upgrade(ctx); err != nil {
 		_ = container.Close()

@@ -5,9 +5,11 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/SafwanGanz/Sonicos/internal/command"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/proto/waWeb"
 	"go.mau.fi/whatsmeow/types"
@@ -112,13 +114,12 @@ func TestHandleEvent_IgnoresOfflineSyncWindowAndAcceptsAfterCompleted(t *testing
 
 	handler(&events.OfflineSyncPreview{Total: 3, Messages: 3})
 
-	// Even if a message delivered during offline sync has a timestamp >= acceptAfter,
-	// it must still be ignored until OfflineSyncCompleted arrives.
+	// Offline messages (old or at the connect boundary) must be ignored while offline sync is active.
 	handler(makeGroupMessage("sync-old", clock.Now().Add(-5*time.Minute)))
 	handler(makeGroupMessage("sync-boundary", clock.Now()))
 
 	handler(&events.Connected{})
-	// Connected alone must not clear an active offline sync.
+	// Connected alone must not clear an active offline sync when messages remain.
 	handler(makeGroupMessage("sync-still-active", clock.Now()))
 
 	handler(&events.OfflineSyncCompleted{Count: 3})
@@ -128,6 +129,70 @@ func TestHandleEvent_IgnoresOfflineSyncWindowAndAcceptsAfterCompleted(t *testing
 	got := drainQueueIDs(bot.queue)
 	if len(got) != 1 || got[0] != "live-after-sync" {
 		t.Fatalf("expected [live-after-sync], got %v", got)
+	}
+}
+
+func TestHandleEvent_ReceiptsOnlyOfflineSyncDoesNotBlockLiveMessages(t *testing.T) {
+	clock := newFakeClock(time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC))
+	bot := newTestBot(clock)
+	handler := bot.handleEvent(context.Background())
+
+	// Total=200 from receipts/notifications/appdata, but Messages=0: live messages must not wait for OfflineSyncCompleted.
+	handler(&events.OfflineSyncPreview{Total: 200, Messages: 0})
+	handler(&events.Connected{})
+	handler(makeGroupMessage("live-with-receipts-only", clock.Now()))
+
+	got := drainQueueIDs(bot.queue)
+	if len(got) != 1 || got[0] != "live-with-receipts-only" {
+		t.Fatalf("expected [live-with-receipts-only], got %v", got)
+	}
+}
+
+func TestHandleEvent_ClearsOfflineSyncAfterExpectedMessageCountBeforeCompletedEvent(t *testing.T) {
+	clock := newFakeClock(time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC))
+	bot := newTestBot(clock)
+	handler := bot.handleEvent(context.Background())
+
+	handler(&events.Connected{})
+	handler(&events.OfflineSyncPreview{Total: 200, Messages: 2})
+
+	// Drop the 2 expected offline messages.
+	handler(makeGroupMessage("offline-1", clock.Now().Add(-5*time.Minute)))
+	handler(makeGroupMessage("offline-2", clock.Now().Add(-1*time.Minute)))
+
+	// Even before OfflineSyncCompleted arrives, offlineMessagesRemaining reached 0 so a new command is accepted immediately.
+	handler(makeGroupMessage("live-right-after-2", clock.Now()))
+
+	got := drainQueueIDs(bot.queue)
+	if len(got) != 1 || got[0] != "live-right-after-2" {
+		t.Fatalf("expected [live-right-after-2], got %v", got)
+	}
+}
+
+func TestHandleEvent_ClearlyLiveMessageBypassesOfflineSyncWithoutConsumingQuota(t *testing.T) {
+	clock := newFakeClock(time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC))
+	bot := newTestBot(clock)
+	handler := bot.handleEvent(context.Background())
+
+	handler(&events.Connected{})
+	handler(&events.OfflineSyncPreview{Total: 200, Messages: 2})
+
+	// 1st offline message arrives.
+	handler(makeGroupMessage("offline-1", clock.Now().Add(-10*time.Minute)))
+
+	// A clearly live message (after acceptAfter + incomingSkewTolerance) arrives concurrently before offline sync finishes.
+	liveTS := clock.Now().Add(incomingSkewTolerance + time.Second)
+	handler(makeGroupMessage("live-during-sync", liveTS))
+
+	// 2nd offline message must STILL be dropped (clearly live message didn't consume its quota).
+	handler(makeGroupMessage("offline-2", clock.Now().Add(-2*time.Minute)))
+
+	// Now quota is 0; a boundary message at clock.Now() is accepted.
+	handler(makeGroupMessage("live-after-quota", clock.Now()))
+
+	got := drainQueueIDs(bot.queue)
+	if len(got) != 2 || got[0] != "live-during-sync" || got[1] != "live-after-quota" {
+		t.Fatalf("expected [live-during-sync live-after-quota], got %v", got)
 	}
 }
 
@@ -311,4 +376,99 @@ func TestHandleEvent_ConcurrentRaceFree(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func TestGroupServiceCachePrimeGetInfoAndEventInvalidate(t *testing.T) {
+	clock := newFakeClock(time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC))
+	bot := newTestBot(clock)
+	gs := &groupService{cache: make(map[string]cachedGroupInfo)}
+	bot.groups = gs
+
+	groupJID := types.NewJID("120363000123456789", types.GroupServer)
+	gs.Prime(&types.GroupInfo{
+		JID:       groupJID,
+		GroupName: types.GroupName{Name: "Test Group"},
+		Participants: []types.GroupParticipant{
+			{JID: types.NewJID("15550001111", types.DefaultUserServer), IsAdmin: true},
+		},
+	})
+
+	// Cache hit must succeed even with nil whatsmeow.Client.
+	info, err := gs.GetInfo(context.Background(), groupJID.String())
+	if err != nil {
+		t.Fatalf("GetInfo cached hit failed: %v", err)
+	}
+	if info.Name != "Test Group" || len(info.Participants) != 1 || !info.Participants[0].IsAdmin {
+		t.Fatalf("unexpected cached group info: %+v", info)
+	}
+
+	// *events.GroupInfo must invalidate cached group metadata.
+	handler := bot.handleEvent(context.Background())
+	handler(&events.GroupInfo{JID: groupJID})
+
+	if _, err := gs.GetInfo(context.Background(), groupJID.String()); err == nil {
+		t.Fatal("expected cache miss and nil-client error after GroupInfo invalidation")
+	}
+}
+
+type trackingModStore struct {
+	command.ModerationStore
+	loadStageCalls atomic.Int32
+}
+
+func (s *trackingModStore) LoadStage(context.Context, string) (command.StagedMedia, bool, error) {
+	s.loadStageCalls.Add(1)
+	return command.StagedMedia{}, false, nil
+}
+
+func (s *trackingModStore) SaveStage(context.Context, string, command.StagedMedia, int) error {
+	return nil
+}
+
+func TestHydrateQuotedSoundStickerSkipsSQLForPlainRepliesAndCommands(t *testing.T) {
+	store := &trackingModStore{}
+	bot := &Bot{
+		moderation: store,
+		audioCache: newStickerAudioCache(),
+	}
+
+	// Plain quoted message and !ping should not hit SQL LoadStage.
+	for _, txt := range []string{"just replying to something", "!ping", "!help", "!kick @user"} {
+		msg := command.Message{
+			Chat:            "1203630001@g.us",
+			Text:            txt,
+			QuotedMessageID: "quoted-1",
+			ModerationStore: store,
+		}
+		bot.hydrateQuotedSoundSticker(context.Background(), &msg)
+	}
+	if got := store.loadStageCalls.Load(); got != 0 {
+		t.Fatalf("expected 0 SQL LoadStage calls for plain quoted replies/commands, got %d", got)
+	}
+
+	// Audio/sticker command on a quoted message without QuotedSticker SHOULD consult SQL fallback.
+	stealMsg := command.Message{
+		Chat:            "1203630001@g.us",
+		Text:            "!steal MyPack",
+		QuotedMessageID: "quoted-2",
+		ModerationStore: store,
+	}
+	bot.hydrateQuotedSoundSticker(context.Background(), &stealMsg)
+	if got := store.loadStageCalls.Load(); got == 0 {
+		t.Fatal("expected SQL LoadStage fallback for !steal")
+	}
+
+	// Quoted sticker SHOULD consult SQL fallback even for unrelated text.
+	before := store.loadStageCalls.Load()
+	quotedStickerMsg := command.Message{
+		Chat:            "1203630001@g.us",
+		Text:            "nice sticker",
+		QuotedMessageID: "quoted-3",
+		QuotedSticker:   &command.StickerInfo{FileSHA256: "abc123"},
+		ModerationStore: store,
+	}
+	bot.hydrateQuotedSoundSticker(context.Background(), &quotedStickerMsg)
+	if got := store.loadStageCalls.Load(); got <= before {
+		t.Fatal("expected SQL LoadStage fallback when QuotedSticker is present")
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SafwanGanz/Sonicos/internal/application"
@@ -21,6 +22,7 @@ type Bot struct {
 	client     *whatsmeow.Client
 	processor  *application.Processor
 	moderation command.ModerationStore
+	groups     *groupService
 	audioCache *stickerAudioCache
 	workers    int
 	queue      chan *events.Message
@@ -34,11 +36,13 @@ type Bot struct {
 	qrReady     chan struct{}
 	connectedAt time.Time
 
-	syncMu          sync.RWMutex
-	acceptAfter     time.Time
-	offlineSyncing  bool
-	awaitingConnect bool
-	now             func() time.Time
+	syncMu                   sync.RWMutex
+	acceptAfter              time.Time
+	offlineSyncing           bool
+	offlineMessagesRemaining int
+	awaitingConnect          bool
+	now                      func() time.Time
+	warmingUp                atomic.Bool
 
 	listenerMu sync.RWMutex
 	listener   EventListener
@@ -86,6 +90,7 @@ func (b *Bot) markConnecting() {
 	b.syncMu.Lock()
 	b.acceptAfter = now
 	b.offlineSyncing = false
+	b.offlineMessagesRemaining = 0
 	b.awaitingConnect = true
 	b.syncMu.Unlock()
 }
@@ -105,18 +110,20 @@ func (b *Bot) markConnected() {
 func (b *Bot) markDisconnected() {
 	b.syncMu.Lock()
 	b.offlineSyncing = false
+	b.offlineMessagesRemaining = 0
 	b.awaitingConnect = true
 	b.syncMu.Unlock()
 }
 
-func (b *Bot) markOfflineSyncStarted(total, messages int) {
-	if total <= 0 && messages <= 0 {
+func (b *Bot) markOfflineSyncStarted(messages int) {
+	if messages <= 0 {
 		return
 	}
 	now := b.currentTime()
 	b.syncMu.Lock()
 	b.offlineSyncing = true
-	if now.After(b.acceptAfter) {
+	b.offlineMessagesRemaining = messages
+	if b.awaitingConnect && now.After(b.acceptAfter) {
 		b.acceptAfter = now
 	}
 	b.syncMu.Unlock()
@@ -125,6 +132,7 @@ func (b *Bot) markOfflineSyncStarted(total, messages int) {
 func (b *Bot) markOfflineSyncCompleted() {
 	b.syncMu.Lock()
 	b.offlineSyncing = false
+	b.offlineMessagesRemaining = 0
 	b.syncMu.Unlock()
 }
 
@@ -133,19 +141,32 @@ func (b *Bot) shouldIgnoreIncomingMessage(evt *events.Message) (string, bool) {
 		return "ignored_event", true
 	}
 
-	b.syncMu.RLock()
+	now := b.currentTime()
+
+	b.syncMu.Lock()
 	offlineSyncing := b.offlineSyncing
 	awaitingConnect := b.awaitingConnect
 	acceptAfter := b.acceptAfter
-	b.syncMu.RUnlock()
-
 	if offlineSyncing {
-		return "offline_sync", true
+		isClearlyLive := !evt.Info.Timestamp.IsZero() &&
+			!acceptAfter.IsZero() &&
+			evt.Info.Timestamp.UTC().After(acceptAfter.Truncate(time.Second).Add(incomingSkewTolerance))
+		if !isClearlyLive {
+			if b.offlineMessagesRemaining > 0 {
+				b.offlineMessagesRemaining--
+				if b.offlineMessagesRemaining == 0 {
+					b.offlineSyncing = false
+				}
+			}
+			b.syncMu.Unlock()
+			return "offline_sync", true
+		}
 	}
+	b.syncMu.Unlock()
 
 	cutoff := acceptAfter
 	if awaitingConnect {
-		if now := b.currentTime(); now.After(cutoff) {
+		if now.After(cutoff) {
 			cutoff = now
 		}
 	}
@@ -158,6 +179,31 @@ func (b *Bot) shouldIgnoreIncomingMessage(evt *events.Message) (string, bool) {
 	}
 
 	return "", false
+}
+
+func (b *Bot) warmGroupCache(ctx context.Context) {
+	if b.client == nil || b.client.Store == nil || b.client.Store.ID == nil {
+		return
+	}
+	if !b.warmingUp.CompareAndSwap(false, true) {
+		return
+	}
+	defer b.warmingUp.Store(false)
+
+	warmCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	joined, err := b.client.GetJoinedGroups(warmCtx)
+	if err != nil {
+		if b.logger != nil {
+			b.logger.Debug("group cache pre-warm skipped", "error", err)
+		}
+		return
+	}
+	if b.groups != nil {
+		for _, g := range joined {
+			b.groups.Prime(g)
+		}
+	}
 }
 
 func NewBot(store *sqlstore.Container, processor *application.Processor, workers, queueSize int, logger *slog.Logger) (*Bot, error) {
@@ -174,6 +220,7 @@ func NewBot(store *sqlstore.Container, processor *application.Processor, workers
 	return &Bot{
 		client:          client,
 		processor:       processor,
+		groups:          newGroupServiceCache(client),
 		audioCache:      newStickerAudioCache(),
 		workers:         workers,
 		queue:           make(chan *events.Message, queueSize),
@@ -258,7 +305,7 @@ func (b *Bot) handleEvent(ctx context.Context) whatsmeow.EventHandler {
 			if b.logger != nil {
 				b.logger.Info("WhatsApp offline sync started", "total", evt.Total, "messages", evt.Messages)
 			}
-			b.markOfflineSyncStarted(evt.Total, evt.Messages)
+			b.markOfflineSyncStarted(evt.Messages)
 		case *events.OfflineSyncCompleted:
 			if evt == nil {
 				return
@@ -267,6 +314,10 @@ func (b *Bot) handleEvent(ctx context.Context) whatsmeow.EventHandler {
 				b.logger.Info("WhatsApp offline sync completed", "count", evt.Count)
 			}
 			b.markOfflineSyncCompleted()
+		case *events.GroupInfo:
+			if evt != nil && b.groups != nil {
+				b.groups.Invalidate(evt.JID.String())
+			}
 		case *events.Connected:
 			if b.logger != nil {
 				b.logger.Info("WhatsApp connected")
@@ -278,6 +329,7 @@ func (b *Bot) handleEvent(ctx context.Context) whatsmeow.EventHandler {
 			b.qrSnap = QRSnapshot{State: "connected"}
 			b.pairMu.Unlock()
 			b.emitEvent("status", map[string]any{"event": "connected"})
+			go b.warmGroupCache(ctx)
 		case *events.Disconnected:
 			if b.logger != nil {
 				b.logger.Warn("WhatsApp disconnected")

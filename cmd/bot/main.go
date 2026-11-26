@@ -55,7 +55,7 @@ func run() error {
 
 	var deduper application.Idempotency
 	if cfg.RedisURL != "" {
-		redisCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		redisCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
 		deduper, err = idempotency.New(redisCtx, cfg.RedisURL)
 		cancel()
 		if err != nil {
