@@ -138,7 +138,7 @@ The Railway configuration builds the root [Dockerfile](Dockerfile) and restarts 
 
 The Docker image pre-installs all runtime dependencies:
 - `ffmpeg` — sticker/audio conversion and TTS waveform encoding
-- `Node.js 20 LTS` + `edge-tts` CLI — `!tts` text-to-speech synthesis
+- `Python 3` + `edge-tts` PyPI CLI — `!tts` text-to-speech synthesis
 
 ### Storage Modes (Auto-Detected)
 - **Local PC / VPS:** Uses `./data/sonicos.db` (SQLite3) + `REDIS_URL` (`redis://localhost:6379/0`) by default.

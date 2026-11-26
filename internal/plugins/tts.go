@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -42,8 +43,9 @@ func (r *ttsRegistry) voices24h(ctx context.Context) ([]ttsVoice, error) {
 	r.mu.RLock()
 	if r.loaded && time.Since(r.loadedAt) < 24*time.Hour {
 		v := r.voices
+		err := r.loadError
 		r.mu.RUnlock()
-		return v, r.loadError
+		return v, err
 	}
 	r.mu.RUnlock()
 
@@ -54,12 +56,16 @@ func (r *ttsRegistry) voices24h(ctx context.Context) ([]ttsVoice, error) {
 	}
 
 	voices, err := loadVoicesFromCLI(ctx)
+	if err != nil {
+		// Don't poison the 24h cache on transient CLI failures; keep any prior voices.
+		return r.voices, err
+	}
 	r.voices = voices
-	r.loadError = err
+	r.loadError = nil
 	r.loadedAt = time.Now()
 	r.loaded = true
 	r.byAlias, r.byShort = buildLookups(voices)
-	return voices, err
+	return voices, nil
 }
 
 func (r *ttsRegistry) find(ctx context.Context, name string) (*ttsVoice, bool) {
@@ -67,7 +73,7 @@ func (r *ttsRegistry) find(ctx context.Context, name string) (*ttsVoice, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if name == "" {
-		if v, ok := r.byShort["en-us-arianneural"]; ok {
+		if v, ok := r.byShort["en-us-arianeural"]; ok {
 			return v, true
 		}
 		if v, ok := r.byAlias["aria"]; ok {
@@ -263,7 +269,7 @@ func ttsCmd(ctx context.Context, _ command.Message, args []string, reply command
 	if sub == "list" || sub == "voices" {
 		filter := ""
 		if len(args) > 1 {
-			filter = strings.ToLower(strings.TrimSpace(args[1]))
+			filter = strings.ToLower(strings.TrimSpace(strings.Join(args[1:], " ")))
 		}
 		return ttsListVoices(ctx, filter, reply, prefix)
 	}
@@ -341,7 +347,11 @@ func ttsListVoices(ctx context.Context, filter string, reply command.ReplyFunc, 
 		case "male", "m":
 			genderFilter = "Male"
 		default:
-			langFilter = strings.ToLower(args[0])
+			if p, err := strconv.Atoi(args[0]); err == nil && p > 0 && len(args) == 1 {
+				page = p
+			} else {
+				langFilter = strings.ToLower(args[0])
+			}
 		}
 	}
 	if len(args) >= 2 {
@@ -506,11 +516,20 @@ func localeFlag(locale string) string {
 
 func synthesizeTTS(ctx context.Context, text, voiceShortName string) ([]byte, error) {
 	bin := ttsSynthBinary()
-	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("tts_%d.mp3", ttsRandID()))
+	id := ttsRandID()
+	txtFile := filepath.Join(os.TempDir(), fmt.Sprintf("tts_%d.txt", id))
+	if err := os.WriteFile(txtFile, []byte(text), 0o600); err != nil {
+		return nil, err
+	}
+	defer os.Remove(txtFile)
 
+	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("tts_%d.mp3", id))
+	defer os.Remove(tmpFile)
+
+	// Pass text via --file so strings starting with '-' are never parsed as CLI flags.
 	cmd := exec.CommandContext(ctx, bin,
 		"--voice", voiceShortName,
-		"--text", text,
+		"--file", txtFile,
 		"--write-media", tmpFile,
 		"--no-progress",
 	)
@@ -519,7 +538,6 @@ func synthesizeTTS(ctx context.Context, text, voiceShortName string) ([]byte, er
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	defer os.Remove(tmpFile)
 
 	data, err := os.ReadFile(tmpFile)
 	if err != nil {
@@ -644,21 +662,30 @@ func ttsSynthBinary() string {
 	if v := strings.TrimSpace(os.Getenv("SONICOS_TTS_BIN")); v != "" {
 		return v
 	}
-	for _, c := range []string{
-		"/home/alchemist/.local/bin/edge-tts",
+	var candidates []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates, filepath.Join(home, ".local", "bin", "edge-tts"))
+	}
+	candidates = append(candidates,
 		"/usr/local/bin/edge-tts",
 		"/usr/bin/edge-tts",
-	} {
+	)
+	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {
 			return c
 		}
+	}
+	if p, err := exec.LookPath("edge-tts"); err == nil {
+		return p
 	}
 	return "edge-tts"
 }
 
 func ffmpegBinary() string {
-	if v := strings.TrimSpace(os.Getenv("FFMPEG")); v != "" {
-		return v
+	for _, env := range []string{"FFMPEG_PATH", "FFMPEG"} {
+		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
+			return v
+		}
 	}
 	return "ffmpeg"
 }
@@ -666,6 +693,6 @@ func ffmpegBinary() string {
 var ttsRandCounter int64
 
 func ttsRandID() int64 {
-	ttsRandCounter++
-	return ttsRandCounter*1_000_000 + int64(os.Getpid())
+	n := atomic.AddInt64(&ttsRandCounter, 1)
+	return n*1_000_000 + int64(os.Getpid())
 }

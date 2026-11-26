@@ -2,18 +2,13 @@ FROM golang:1.26-bookworm
 
 WORKDIR /src
 
-# System deps: ffmpeg for audio/sticker/media processing, ca-certificates for TLS.
+# System deps: ffmpeg for audio/sticker/media processing, Python 3 for edge-tts, ca-certificates for TLS.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates ffmpeg curl \
+    ca-certificates ffmpeg curl python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Node.js 20 LTS for the edge-tts TTS CLI.
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
-
-# edge-tts CLI used by the !tts plugin (text-to-speech synthesis).
-RUN npm install -g edge-tts
+# Python edge-tts CLI used by the !tts plugin (text-to-speech synthesis).
+RUN pip3 install --no-cache-dir --break-system-packages edge-tts
 
 COPY go.mod go.sum ./
 RUN go mod download
