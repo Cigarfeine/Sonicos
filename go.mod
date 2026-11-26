@@ -1,4 +1,4 @@
-module github.com/sonicos/whatsapp-bot
+module github.com/SafwanGanz/Sonicos
 
 go 1.26.0
 

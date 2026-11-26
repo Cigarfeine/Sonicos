@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sonicos/whatsapp-bot/internal/command"
+	"github.com/SafwanGanz/Sonicos/internal/command"
 )
 
 func init() {

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sonicos/whatsapp-bot/internal/command"
+	"github.com/SafwanGanz/Sonicos/internal/command"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"google.golang.org/protobuf/proto"
 )

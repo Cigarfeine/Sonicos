@@ -3,19 +3,21 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/sonicos/whatsapp-bot/internal/application"
-	"github.com/sonicos/whatsapp-bot/internal/command"
-	"github.com/sonicos/whatsapp-bot/internal/config"
-	"github.com/sonicos/whatsapp-bot/internal/idempotency"
-	"github.com/sonicos/whatsapp-bot/internal/moderation"
-	_ "github.com/sonicos/whatsapp-bot/internal/plugins"
-	"github.com/sonicos/whatsapp-bot/internal/whatsapp"
+	"github.com/SafwanGanz/Sonicos/internal/api"
+	"github.com/SafwanGanz/Sonicos/internal/application"
+	"github.com/SafwanGanz/Sonicos/internal/command"
+	"github.com/SafwanGanz/Sonicos/internal/config"
+	"github.com/SafwanGanz/Sonicos/internal/idempotency"
+	"github.com/SafwanGanz/Sonicos/internal/moderation"
+	_ "github.com/SafwanGanz/Sonicos/internal/plugins"
+	"github.com/SafwanGanz/Sonicos/internal/whatsapp"
 )
 
 func main() {
@@ -33,6 +35,7 @@ func run() error {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel(cfg.LogLevel)}))
 	slog.SetDefault(logger)
+
 	registry, err := command.Default()
 	if err != nil {
 		return err
@@ -57,11 +60,41 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
 	bot, err := whatsapp.NewBot(sessionStore, processor, cfg.Workers, cfg.QueueSize, logger)
 	if err != nil {
 		return err
 	}
-	bot.SetModerationStore(moderation.NewRedisStore(deduper.Client()))
+	modStore := moderation.NewRedisStore(deduper.Client())
+	bot.SetModerationStore(modStore)
+
+	// Create API server
+	apiServer := api.NewServer(bot, registry, modStore, logger)
+
+	// Start HTTP server in background
+	apiPort := os.Getenv("PORT")
+	if apiPort == "" {
+		apiPort = "8080"
+	}
+
+	srv := &http.Server{
+		Addr:    ":" + apiPort,
+		Handler: apiServer.Handler(),
+	}
+
+	go func() {
+		logger.Info("HTTP server starting", "port", apiPort)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("HTTP server failed", "error", err)
+		}
+	}()
+
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
 	logger.Info("starting WhatsApp bot", "workers", cfg.Workers, "queue_size", cfg.QueueSize, "prefix", cfg.Prefix)
 	return bot.Run(ctx)
 }

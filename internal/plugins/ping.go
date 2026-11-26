@@ -3,7 +3,7 @@ package plugins
 import (
 	"context"
 
-	"github.com/sonicos/whatsapp-bot/internal/command"
+	"github.com/SafwanGanz/Sonicos/internal/command"
 )
 
 func init() {

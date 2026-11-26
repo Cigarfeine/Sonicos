@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/sonicos/whatsapp-bot/internal/command"
+	"github.com/SafwanGanz/Sonicos/internal/command"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types/events"
 )

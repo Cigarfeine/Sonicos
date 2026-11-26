@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/sonicos/whatsapp-bot/internal/command"
+	"github.com/SafwanGanz/Sonicos/internal/command"
 )
 
 type ttsVoice struct {

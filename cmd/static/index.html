@@ -1,0 +1,1042 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Sonicos Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js" defer></script>
+<style>
+:root{
+  --bg:#0e0e0e;--panel:#141414;--panel2:#1a1a1a;--line:#262626;--line2:#333;
+  --text:#f1efea;--muted:#8b8b86;--dim:#5c5c58;
+  --accent:#ff4a1c;--accent-ink:#0e0e0e;--ok:#4fd18b;--warn:#f2b441;--err:#ff5d5d;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:"Inter Tight",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+[hidden]{display:none!important}
+a{color:inherit}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mono{font-family:var(--mono)}
+.muted{color:var(--muted)}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+
+/* layout */
+.app{display:grid;grid-template-columns:248px 1fr;min-height:100vh}
+.side{position:sticky;top:0;height:100vh;border-right:1px solid var(--line);display:flex;flex-direction:column;padding:24px 16px;background:var(--bg)}
+.brand{display:flex;align-items:center;justify-content:space-between;padding:0 8px 28px}
+.logo{font-weight:600;font-size:22px;letter-spacing:-.04em;display:flex;align-items:center;gap:10px}
+.logo i{display:inline-block;width:14px;height:14px;background:var(--accent)}
+.menu-btn{display:none;background:none;border:0;font-family:var(--mono);font-size:12px;letter-spacing:.08em;cursor:pointer;padding:8px}
+.nav{display:flex;flex-direction:column;gap:2px;flex:1;overflow:auto}
+.nav a{display:flex;align-items:center;gap:12px;padding:10px 12px;text-decoration:none;font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);border-left:2px solid transparent;transition:color .15s,background .15s}
+.nav a:hover{color:var(--text);background:var(--panel)}
+.nav a.on{color:var(--text);border-left-color:var(--accent);background:var(--panel)}
+.nav svg{width:16px;height:16px;flex:none}
+.side-foot{border-top:1px solid var(--line);padding-top:16px;display:grid;gap:10px;font-family:var(--mono);font-size:11px;color:var(--muted)}
+.chip{display:inline-flex;align-items:center;gap:8px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
+.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.err{background:var(--err)}.dot.acc{background:var(--accent)}
+.main{min-width:0;padding:40px clamp(20px,4vw,56px) 80px}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;flex-wrap:wrap;margin-bottom:36px}
+.page-head h1{font-weight:300;font-size:clamp(34px,5vw,56px);line-height:1.02;letter-spacing:-.035em;margin:10px 0 8px}
+.page-head p{margin:0;color:var(--muted);max-width:56ch}
+
+/* buttons — mono caps, square, optional attached plus */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;background:var(--accent);color:var(--accent-ink);border:1px solid var(--accent);padding:11px 16px;font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;transition:filter .15s,background .15s,border-color .15s;text-decoration:none}
+.btn:hover{filter:brightness(1.1)}
+.btn:disabled{opacity:.45;cursor:not-allowed;filter:none}
+.btn.ghost{background:transparent;color:var(--text);border-color:var(--line2)}
+.btn.ghost:hover{border-color:var(--text);filter:none}
+.btn.danger{background:transparent;color:var(--err);border-color:#5a2a2a}
+.btn.danger:hover{background:#2a1313;filter:none}
+.btn.sm{padding:7px 10px;font-size:11px}
+.btn.plus{padding:11px 14px;margin-left:6px}
+.btn-group{display:inline-flex}
+.lnk{color:var(--accent);text-decoration:none;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;border-bottom:1px solid transparent}
+.lnk:hover{border-bottom-color:var(--accent)}
+.lnk.ul{color:var(--text);border-bottom-color:var(--text)}
+
+/* cards, grid */
+.card{background:var(--panel);border:1px solid var(--line);padding:22px}
+.card+.card{margin-top:16px}
+.card-h{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px;font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.grid{display:grid;gap:1px;background:var(--line);border:1px solid var(--line)}
+.grid.stats{grid-template-columns:repeat(auto-fit,minmax(190px,1fr));margin-bottom:16px;gap:0;background:none;border:0;border-left:1px solid var(--line);border-top:1px solid var(--line)}
+.grid.stats .tile{border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
+.tile{background:var(--panel);padding:20px 22px}
+.tile .v{font-weight:300;font-size:38px;letter-spacing:-.03em;line-height:1.1;margin-top:10px;word-break:break-word}
+.tile .v.sm{font-size:26px}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:16px}
+.cols .card+.card{margin-top:0}
+.kv{display:grid;grid-template-columns:140px 1fr;gap:10px 16px;margin:0}
+.kv dt{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding-top:2px}
+.kv dd{margin:0;word-break:break-word}
+
+/* forms */
+.form{display:grid;gap:20px;max-width:720px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.field label,.lbl{display:block;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.field .hint{font-size:13px;color:var(--dim);margin-top:6px}
+input[type=text],input[type=password],input[type=tel],input[type=search],input[type=url],input[type=number],select,textarea{width:100%;background:#0b0b0b;border:1px solid var(--line2);padding:11px 12px;border-radius:0;transition:border-color .15s}
+input:hover,select:hover,textarea:hover{border-color:#4a4a4a}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
+textarea{min-height:92px;resize:vertical}
+select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);background-position:calc(100% - 18px) 55%,calc(100% - 13px) 55%;background-size:5px 5px;background-repeat:no-repeat;padding-right:34px}
+input[type=range]{accent-color:var(--accent);padding:0;border:0;background:none}
+.sw{position:relative;display:inline-block;width:40px;height:22px;flex:none}
+.sw input{position:absolute;opacity:0;inset:0;margin:0;cursor:pointer;z-index:1}
+.sw span{position:absolute;inset:0;border:1px solid var(--line2);background:#0b0b0b;transition:.15s}
+.sw span::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;background:var(--dim);transition:.15s}
+.sw input:checked+span{border-color:var(--accent)}
+.sw input:checked+span::after{left:21px;background:var(--accent)}
+.sw input:focus-visible+span{outline:2px solid var(--accent);outline-offset:2px}
+.sw input:disabled{cursor:not-allowed}.sw input:disabled+span{opacity:.5}
+.toggle-row{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:14px 0;border-top:1px solid var(--line)}
+.toggle-row:first-of-type{border-top:0}
+.toggle-row b{font-weight:500;display:block}
+.toggle-row small{color:var(--muted);font-size:13px}
+.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.toolbar input[type=search]{flex:1;min-width:200px}
+.toolbar select{width:auto;min-width:150px}
+
+/* tabs */
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--line);margin-bottom:24px;overflow:auto}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:12px 18px;font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);cursor:pointer;white-space:nowrap;margin-bottom:-1px}
+.tabs button:hover{color:var(--text)}
+.tabs button[aria-selected=true]{color:var(--text);border-bottom-color:var(--accent)}
+
+/* tables */
+.tbl-wrap{overflow:auto;border:1px solid var(--line);background:var(--panel)}
+table{width:100%;border-collapse:collapse;min-width:560px}
+th{font-family:var(--mono);font-weight:400;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;padding:12px 16px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:13px 16px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:#171717}
+td.r,th.r{text-align:right}
+.pager{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 4px 0;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.tag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--line2);padding:2px 7px;color:var(--muted)}
+.tag.acc{border-color:var(--accent);color:var(--accent)}
+.tag.ok{border-color:#235a3d;color:var(--ok)}.tag.warn{border-color:#5a4a1d;color:var(--warn)}.tag.err{border-color:#5a2a2a;color:var(--err)}
+.conf{display:inline-block;width:72px;height:6px;background:var(--line);vertical-align:middle;margin-right:8px}
+.conf i{display:block;height:100%;background:var(--accent)}
+.sev{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+
+/* states */
+.sk{height:14px;margin:12px 0;background:linear-gradient(90deg,#1a1a1a 25%,#242424 50%,#1a1a1a 75%);background-size:200% 100%;animation:sh 1.4s linear infinite}
+.sk.tile-sk{height:84px;margin:0}
+@keyframes sh{to{background-position:-200% 0}}
+.empty,.errbox{padding:44px 20px;text-align:center;color:var(--muted);border:1px dashed var(--line2)}
+.empty b,.errbox b{display:block;color:var(--text);font-weight:500;font-size:16px;margin-bottom:6px}
+.errbox{border-color:#5a2a2a}.errbox b{color:var(--err)}
+.errbox .btn{margin-top:14px}
+.banner{display:flex;gap:12px;align-items:center;padding:14px 18px;border:1px solid var(--line2);background:var(--panel);margin-bottom:20px}
+.banner.ok{border-color:#235a3d}.banner.warn{border-color:#5a4a1d}.banner.err{border-color:#5a2a2a}
+.offline{position:sticky;top:0;z-index:50;background:#2a1313;border-bottom:1px solid #5a2a2a;color:#ffb4b4;padding:10px 20px;font-family:var(--mono);font-size:12px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.offline button{background:none;border:0;color:#fff;text-decoration:underline;cursor:pointer;font:inherit;padding:0}
+
+/* connection */
+.link-grid{display:grid;grid-template-columns:minmax(260px,340px) 1fr;gap:32px;align-items:start}
+.qr-box{position:relative;background:#fff;padding:16px;aspect-ratio:1;display:grid;place-items:center;color:#111}
+.qr-box::before,.qr-box::after{content:"";position:absolute;width:22px;height:22px;border:2px solid var(--accent)}
+.qr-box::before{top:-6px;left:-6px;border-right:0;border-bottom:0}
+.qr-box::after{bottom:-6px;right:-6px;border-left:0;border-top:0}
+.qr-box svg{width:100%;height:auto;display:block}
+.qr-box img{width:100%;height:auto;display:block;image-rendering:pixelated}
+.qr-wait{background:var(--panel2);color:var(--muted);text-align:center;padding:24px;font-size:14px}
+.qr-over{position:absolute;inset:0;background:rgba(14,14,14,.92);color:var(--text);display:grid;place-items:center;text-align:center;padding:20px;gap:12px;align-content:center}
+.steps{margin:0;padding:0;list-style:none;counter-reset:s;display:grid;gap:14px}
+.steps li{counter-increment:s;display:grid;grid-template-columns:34px 1fr;gap:12px;color:var(--muted)}
+.steps li::before{content:counter(s,decimal-leading-zero);font-family:var(--mono);font-size:12px;color:var(--accent);padding-top:2px}
+.steps li b{color:var(--text);font-weight:500}
+.code{font-family:var(--mono);font-weight:500;font-size:clamp(30px,6vw,46px);letter-spacing:.14em;color:var(--accent);background:#0b0b0b;border:1px solid var(--line2);padding:18px 22px;display:inline-block;user-select:all}
+.phone-row{display:grid;grid-template-columns:minmax(150px,190px) 1fr;gap:10px}
+
+/* dialogs & toasts */
+dialog{background:var(--panel);color:var(--text);border:1px solid var(--line2);padding:0;width:min(560px,92vw);max-height:88vh;overflow:auto}
+dialog::backdrop{background:rgba(0,0,0,.72)}
+.dlg-b{padding:26px}
+.dlg-b h3{font-weight:400;font-size:26px;letter-spacing:-.02em;margin:0 0 10px}
+.dlg-b p{color:var(--muted);margin:0 0 22px}
+.dlg-f{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;margin-top:24px}
+#toasts{position:fixed;right:20px;bottom:20px;display:grid;gap:10px;z-index:100;max-width:min(380px,calc(100vw - 40px))}
+.toast{background:var(--panel2);border:1px solid var(--line2);border-left:3px solid var(--accent);padding:12px 16px;font-size:14px;animation:in .2s ease-out}
+.toast.ok{border-left-color:var(--ok)}.toast.err{border-left-color:var(--err)}
+@keyframes in{from{opacity:0;transform:translateY(6px)}}
+
+/* auth/setup */
+.screen{min-height:100vh;display:grid;place-items:center;padding:24px}
+.auth{width:min(440px,100%)}
+.auth h1{font-weight:300;font-size:clamp(36px,8vw,52px);letter-spacing:-.035em;line-height:1.02;margin:18px 0 12px}
+.auth p{color:var(--muted);margin:0 0 28px}
+.auth .form{max-width:none}
+.err-t{color:var(--err);font-size:14px;min-height:1.3em}
+
+@media(max-width:900px){
+  .app{grid-template-columns:1fr}
+  .side{position:sticky;top:0;height:auto;flex-direction:column;padding:12px 16px;z-index:40;border-right:0;border-bottom:1px solid var(--line)}
+  .brand{padding:0}
+  .menu-btn{display:block}
+  .nav,.side-foot{display:none}
+  .side.open .nav{display:flex;padding:12px 0}
+  .side.open .side-foot{display:grid}
+  .main{padding-top:28px}
+  .link-grid{grid-template-columns:1fr}
+  .row2{grid-template-columns:1fr}
+  .kv{grid-template-columns:1fr;gap:2px}
+  .kv dd{margin-bottom:10px}
+}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<div id="offline" class="offline" hidden role="alert">
+  <span>Backend unreachable. Check that the bot is running and the API URL is correct.</span>
+  <button id="off-retry" type="button">Retry</button>
+  <button id="off-url" type="button">Change URL</button>
+</div>
+
+<main id="screen" class="screen" hidden></main>
+
+<div id="app" class="app" hidden>
+  <aside class="side" id="side">
+    <div class="brand">
+      <div class="logo"><i></i>SONICOS</div>
+      <button class="menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="nav">MENU ≡</button>
+    </div>
+    <nav class="nav" id="nav" aria-label="Main"></nav>
+    <div class="side-foot">
+      <span class="chip" title="Live update channel"><span class="dot" id="live-dot"></span><span id="live-txt">Connecting…</span></span>
+      <span class="chip" title="WhatsApp connection"><span class="dot" id="wa-dot"></span><span id="wa-txt">WhatsApp —</span></span>
+      <span id="api-host" style="word-break:break-all"></span>
+      <button class="btn ghost sm" id="signout" type="button">Sign out</button>
+    </div>
+  </aside>
+  <section class="main"><div id="view" aria-live="polite"></div></section>
+</div>
+
+<dialog id="dlg"><form method="dialog" class="dlg-b">
+  <h3 id="dlg-t"></h3><p id="dlg-p"></p>
+  <div class="dlg-f"><button class="btn ghost" value="cancel">Cancel</button><button class="btn" id="dlg-ok" value="ok">Confirm</button></div>
+</form></dialog>
+<dialog id="modal"></dialog>
+<div id="toasts" role="status" aria-live="polite"></div>
+
+<script>
+'use strict';
+/* =====================================================================
+   CONFIG — edit this block to match your Go backend.
+   Set DEFAULT_API_BASE to your deployed bot (e.g. Railway) or leave it
+   empty and the dashboard will ask for the URL on first load.
+   Nothing secret lives in this file. Auth is an HttpOnly cookie.
+   ===================================================================== */
+const DEFAULT_API_BASE = '';
+/* Demo mode: serves generated data from inside the page, no backend needed.
+   Set to false (or open the page with ?mock=0) to talk to the real backend. */
+const MOCK = new URLSearchParams(location.search).get('mock') === '1';
+const enc = encodeURIComponent;
+const EP = {
+  login:'/auth/login', logout:'/auth/logout', me:'/auth/me',
+  status:'/status', events:'/events',
+  qr:'/qr', qrRefresh:'/connection/qr/refresh', pair:'/pair',
+  reconnect:'/connection/reconnect', disconnect:'/connection/disconnect', unlink:'/connection/unlink',
+  settings:'/settings', prefix:'/commands/prefix',
+  commands:'/commands', command:n=>`/commands/${enc(n)}`,
+  groups:'/groups', group:id=>`/groups/${enc(id)}`,
+  modSettings:'/moderation/settings',
+  modEnrolled:'/moderation/enrolled', modEnrolledItem:id=>`/moderation/enrolled/${enc(id)}`,
+  modMatches:'/moderation/matches', modReview:id=>`/moderation/matches/${enc(id)}/review`,
+  modHistory:'/moderation/history',
+  users:'/users', userHistory:id=>`/users/${enc(id)}/history`, userReset:id=>`/users/${enc(id)}/warnings/reset`,
+  logs:'/logs'
+};
+
+/* ---------- tiny helpers ---------- */
+const $ = (s,r=document)=>r.querySelector(s);
+const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
+const esc = s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtNum = n=>n==null||n===''||isNaN(n)?'—':Number(n).toLocaleString();
+const fmtTime = t=>{ if(!t) return '—'; const d=new Date(t); return isNaN(d)?'—':d.toLocaleString(undefined,{dateStyle:'medium',timeStyle:'medium'}); };
+const fmtDur = s=>{ if(s==null||isNaN(s)) return '—'; s=Math.max(0,Math.floor(s)); const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60),x=s%60; return d?`${d}d ${h}h ${m}m`:h?`${h}h ${String(m).padStart(2,'0')}m ${String(x).padStart(2,'0')}s`:`${m}m ${String(x).padStart(2,'0')}s`; };
+const items = d=>Array.isArray(d)?d:(d&&Array.isArray(d.items)?d.items:[]);
+const totalOf = (d,fallback)=>d&&typeof d.total==='number'?d.total:fallback;
+const pct = c=>{ c=Number(c); if(isNaN(c)) return 0; return Math.round(Math.min(100,Math.max(0,c<=1?c*100:c))); };
+const maskId = j=>{ const p=String(j||'').split('@')[0].split(':')[0]; return p.length>4?`+••••${p.slice(-4)}`:p||'—'; };
+const phoneOf = j=>{ const p=String(j||'').split('@')[0].split(':')[0]; return p?`+${p}`:''; };
+const debounce=(fn,ms=300)=>{let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms)}};
+
+const ICON = {
+  overview:'<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',
+  connection:'<path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
+  settings:'<path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+  commands:'<path d="M4 17l6-6-6-6"/><path d="M12 19h8"/>',
+  groups:'<circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 5a3 3 0 0 1 0 6M18 14c1.8.8 3 2.6 3 6"/>',
+  moderation:'<path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z"/>',
+  users:'<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/>',
+  logs:'<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>'
+};
+const ico = n=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" aria-hidden="true">${ICON[n]||''}</svg>`;
+const skel = (n=3)=>Array.from({length:n},(_,i)=>`<div class="sk" style="width:${90-i*12}%"></div>`).join('');
+const skelTiles = n=>Array.from({length:n},()=>`<div class="tile"><div class="sk tile-sk"></div></div>`).join('');
+const head = (eyebrow,title,sub='',actions='')=>`<header class="page-head"><div><div class="eyebrow">${esc(eyebrow)}</div><h1>${esc(title)}</h1>${sub?`<p>${esc(sub)}</p>`:''}</div>${actions?`<div class="actions">${actions}</div>`:''}</header>`;
+const sw = (id,on,attrs='')=>`<label class="sw"><input type="checkbox" id="${id}" ${on?'checked':''} ${attrs}><span></span></label>`;
+const empty = (t,s='')=>`<div class="empty"><b>${esc(t)}</b>${esc(s)}</div>`;
+function errBox(el,e,retry){
+  el.innerHTML=`<div class="errbox"><b>${e&&e.status===0?'Backend unreachable':'Could not load this section'}</b>${esc(e&&e.message||'Unknown error')}<br><button class="btn ghost sm" type="button">Try again</button></div>`;
+  $('button',el).onclick=retry;
+}
+function pager(total,page,size){
+  const pages=Math.max(1,Math.ceil(total/size));
+  return `<div class="pager"><span>${total?(page-1)*size+1:0}–${Math.min(total,page*size)} of ${fmtNum(total)}</span><span><button class="btn ghost sm" data-pg="${page-1}" ${page<=1?'disabled':''}>Prev</button> <button class="btn ghost sm" data-pg="${page+1}" ${page>=pages?'disabled':''}>Next</button></span></div>`;
+}
+function toast(msg,kind=''){
+  const t=document.createElement('div'); t.className='toast '+kind; t.textContent=msg; $('#toasts').append(t);
+  setTimeout(()=>t.remove(),kind==='err'?7000:3800);
+}
+function confirmDialog({title,body,confirmText='Confirm',danger=false}){
+  return new Promise(res=>{
+    const d=$('#dlg'); $('#dlg-t').textContent=title; $('#dlg-p').textContent=body;
+    const ok=$('#dlg-ok'); ok.textContent=confirmText; ok.className='btn'+(danger?' danger':'');
+    d.onclose=()=>res(d.returnValue==='ok'); d.returnValue='cancel'; d.showModal();
+  });
+}
+function openModal(html,mount){
+  const m=$('#modal'); m.innerHTML=`<div class="dlg-b">${html}</div>`;
+  m.onclick=e=>{ if(e.target===m) m.close(); };
+  m.showModal(); mount&&mount(m); return m;
+}
+async function run(btn,fn,okMsg){
+  const label=btn&&btn.textContent; if(btn){btn.disabled=true;}
+  try{ const r=await fn(); if(okMsg) toast(okMsg,'ok'); return r; }
+  catch(e){ if(e.status!==401) toast(e.message||'Something went wrong','err'); return undefined; }
+  finally{ if(btn){btn.disabled=false; btn.textContent=label;} }
+}
+
+/* ---------- state + API ---------- */
+const state = { base:'', status:null, statusAt:0, live:'off', es:null, poll:null };
+class ApiError extends Error{ constructor(m,status,data){ super(m); this.status=status; this.data=data; } }
+const bus = (()=>{ const h={}; return {
+  on(t,f){ (h[t]=h[t]||new Set()).add(f); return ()=>h[t].delete(f); },
+  emit(t,d){ (h[t]||[]).forEach(f=>{ try{f(d)}catch(e){console.error(e)} }); }
+};})();
+
+function setOffline(v){ $('#offline').hidden=!v; }
+async function api(path,{method='GET',body}={}){
+  if(MOCK) return mockApi(path,method,body);
+  if(!state.base) throw new ApiError('No backend URL configured',0);
+  const headers={Accept:'application/json'};
+  if(method!=='GET'){ headers['Content-Type']='application/json'; headers['X-Requested-With']='sonicos-dashboard'; }
+  const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(),20000);
+  let res;
+  try{
+    res=await fetch(state.base+path,{method,headers,credentials:'include',body:body===undefined?undefined:JSON.stringify(body),signal:ctrl.signal});
+  }catch(e){ setOffline(true); throw new ApiError('Cannot reach the backend',0); }
+  finally{ clearTimeout(to); }
+  setOffline(false);
+  const ct=res.headers.get('content-type')||''; let data=null;
+  try{
+    if(res.status===204) data=null;
+    else if(ct.includes('json')) data=await res.json();
+    else if(ct.startsWith('image/')) data=await res.blob();
+    else data=await res.text();
+  }catch{}
+  if(res.status===401){ if(path!==EP.login&&path!==EP.me) onUnauthorized(); throw new ApiError((data&&data.error)||'Not signed in',401,data); }
+  if(!res.ok) throw new ApiError((data&&data.error)||(typeof data==='string'&&data.trim().slice(0,200))||`Request failed (${res.status})`,res.status,data);
+  return data;
+}
+
+/* ---------- status normalisation (accepts your current /status shape too) ---------- */
+function normStatus(r){
+  r=r||{}; const st=r.stats||{};
+  const connected=r.connected ?? (r.state==='connected');
+  const jid=r.account&&r.account.jid || r.account_id || null;
+  const account=(r.account||jid)?{ jid, phone:(r.account&&r.account.phone)||r.phone||phoneOf(jid), name:(r.account&&r.account.name)||r.push_name||null }:null;
+  return {
+    connected:!!connected, state:r.state||(connected?'connected':'disconnected'), account,
+    uptime:r.uptime_seconds??null, since:r.connected_since||null,
+    stats:{ messages:st.messages??r.total_messages, groups:st.groups??r.active_groups, users:st.users??r.total_users,
+            moderation:st.moderation_events??r.moderation_events, warnings:st.warnings??r.total_warnings },
+    health:Array.isArray(r.health)?r.health:[], maintenance:!!r.maintenance, version:r.version||null
+  };
+}
+function applyStatus(raw){
+  const s=normStatus(raw); state.status=s; state.statusAt=Date.now();
+  const labels={connected:['ok','Connected'],connecting:['warn','Connecting'],qr:['warn','Awaiting QR scan'],pairing:['warn','Awaiting pairing'],disconnected:['err','Disconnected']};
+  const [cls,txt]=labels[s.state]||['','Unknown'];
+  $('#wa-dot').className='dot '+cls; $('#wa-txt').textContent='WhatsApp: '+txt;
+  bus.emit('status',s); return s;
+}
+function connectedSeconds(s){
+  if(s.since){ const d=Date.parse(s.since); if(!isNaN(d)) return (Date.now()-d)/1000; }
+  return s.uptime==null?null:s.uptime+(Date.now()-state.statusAt)/1000;
+}
+async function refreshStatus(){ const r=await api(EP.status); return applyStatus(r); }
+
+/* ---------- live updates: SSE with polling fallback ---------- */
+function setLive(mode){
+  state.live=mode;
+  $('#live-dot').className='dot '+({live:'ok',polling:'warn',off:'err'}[mode]||'');
+  $('#live-txt').textContent={live:'Live updates',polling:'Polling every 5s',off:'Updates paused'}[mode]||'';
+}
+function startPolling(){
+  if(state.poll) return;
+  state.poll=setInterval(async()=>{ try{ await refreshStatus(); bus.emit('poll'); }catch{} },5000);
+}
+function stopPolling(){ clearInterval(state.poll); state.poll=null; }
+function startLive(){
+  stopLive();
+  if(MOCK){ setLive('live'); $('#live-txt').textContent='Live · demo data'; mockStartSim(); return; }
+  if(!window.EventSource){ setLive('polling'); startPolling(); return; }
+  const es=new EventSource(state.base+EP.events,{withCredentials:true}); state.es=es;
+  es.onopen=()=>{ setLive('live'); stopPolling(); };
+  ['status','qr','pairing','activity','moderation'].forEach(t=>es.addEventListener(t,e=>{
+    let d; try{ d=JSON.parse(e.data); }catch{ return; }
+    if(t==='status') applyStatus(d); else bus.emit(t,d);
+  }));
+  es.onerror=()=>{ setLive('polling'); startPolling(); };
+}
+function stopLive(){ if(state.es){ state.es.close(); state.es=null; } stopPolling(); if(MOCK) mockStopSim(); setLive('off'); }
+
+/* ---------- screens: setup / login ---------- */
+function showScreen(html){ $('#app').hidden=true; const s=$('#screen'); s.hidden=false; s.innerHTML=`<div class="auth">${html}</div>`; return s; }
+function showSetup(msg=''){
+  stopLive();
+  const s=showScreen(`<div class="logo"><i></i>SONICOS</div><h1>Connect to your bot.</h1><p>Enter the public URL of your Go bot backend (for example your Railway domain). Only the URL is saved in this browser. No passwords or tokens are stored.</p>
+  <form class="form" id="f-setup"><div class="field"><label for="u">Backend URL</label><input id="u" type="url" required placeholder="https://your-bot.up.railway.app" value="${esc(state.base)}" autocomplete="url"></div>
+  <div class="err-t" id="e">${esc(msg)}</div><div><span class="btn-group"><button class="btn" type="submit">Continue</button><span class="btn plus" aria-hidden="true">+</span></span></div></form>`);
+  $('#f-setup',s).onsubmit=async ev=>{
+    ev.preventDefault(); let u=$('#u',s).value.trim().replace(/\/+$/,'');
+    try{ const p=new URL(u); if(!/^https?:$/.test(p.protocol)) throw 0; u=p.origin+(p.pathname==='/'?'':p.pathname.replace(/\/+$/,'')); }catch{ $('#e',s).textContent='Enter a valid http(s) URL.'; return; }
+    state.base=u; try{ localStorage.setItem('sonicos.apiBase',u); }catch{}
+    boot();
+  };
+}
+function showLogin(msg=''){
+  stopLive();
+  const s=showScreen(`<div class="logo"><i></i>SONICOS</div><h1>Sign in.</h1><p>Authenticate with the dashboard password configured on your bot.</p>
+  <form class="form" id="f-login"><div class="field"><label for="pw">Password</label><input id="pw" type="password" required autocomplete="current-password" autofocus></div>
+  <div class="err-t" id="e" role="alert">${esc(msg)}</div>
+  <div class="actions"><span class="btn-group"><button class="btn" type="submit">Sign in</button><span class="btn plus" aria-hidden="true">+</span></span><button class="btn ghost" type="button" id="chg">Change backend</button></div></form>
+  <p class="eyebrow" style="margin:24px 0 0;word-break:break-all">${esc(state.base)}</p>`);
+  $('#chg',s).onclick=()=>showSetup();
+  $('#f-login',s).onsubmit=async ev=>{
+    ev.preventDefault(); const b=$('button[type=submit]',s); b.disabled=true;
+    try{ await api(EP.login,{method:'POST',body:{password:$('#pw',s).value}}); boot(); }
+    catch(e){ $('#e',s).textContent=e.status===401?'Incorrect password.':e.message; b.disabled=false; $('#pw',s).select(); }
+  };
+}
+function onUnauthorized(){ if(!$('#app').hidden) showLogin('Your session expired. Please sign in again.'); }
+
+/* ---------- shell + router ---------- */
+const NAV=[['overview','Overview'],['connection','Connection'],['settings','Settings'],['commands','Commands'],['groups','Groups'],['moderation','Moderation'],['users','Users'],['logs','Activity']];
+let cleanup=null;
+function showApp(){
+  $('#screen').hidden=true; $('#app').hidden=false;
+  $('#nav').innerHTML=NAV.map(([k,l])=>`<a href="#${k}" data-k="${k}">${ico(k==='logs'?'logs':k)}<span>${l}</span></a>`).join('');
+  $('#api-host').textContent=MOCK?'DEMO MODE · generated data':state.base.replace(/^https?:\/\//,'');
+  startLive(); route();
+}
+async function route(){
+  if($('#app').hidden) return;
+  if(cleanup){ try{cleanup()}catch{} cleanup=null; }
+  let k=(location.hash||'#overview').slice(1); if(!views[k]) k='overview';
+  $$('#nav a').forEach(a=>{ const on=a.dataset.k===k; a.classList.toggle('on',on); on?a.setAttribute('aria-current','page'):a.removeAttribute('aria-current'); });
+  $('#side').classList.remove('open'); $('#menu-btn').setAttribute('aria-expanded','false');
+  const root=$('#view'); root.innerHTML=''; window.scrollTo(0,0);
+  const my=cleanup=null; let c;
+  try{ c=await views[k](root); }catch(e){ console.error(e); root.innerHTML=head('Error','Something broke')+`<div class="errbox"><b>View failed to render</b>${esc(e.message)}</div>`; }
+  if(typeof c==='function'){ if(location.hash.slice(1)===k||(!location.hash&&k==='overview')) cleanup=c; else c(); }
+}
+window.addEventListener('hashchange',route);
+
+/* =====================================================================
+   VIEWS
+   ===================================================================== */
+const views={};
+
+/* ---- Overview ---- */
+views.overview=async root=>{
+  root.innerHTML=head('Overview','Bot status','Live state of your WhatsApp bot.')+
+    `<div class="grid stats" id="ov-stats">${skelTiles(7)}</div>
+     <div class="cols"><div class="card" id="ov-acct">${skel(3)}</div><div class="card" id="ov-health">${skel(3)}</div></div>
+     <div class="card"><div class="card-h"><span>Recent activity</span><a class="lnk" href="#logs">View all</a></div><div id="ov-act">${skel(4)}</div></div>`;
+  let tick;
+  const tile=(l,v,cls='')=>`<div class="tile"><div class="eyebrow">${l}</div><div class="v ${cls}">${v}</div></div>`;
+  function paint(s){
+    const col={connected:'var(--ok)',disconnected:'var(--err)'}[s.state]||'var(--warn)';
+    const label={connected:'Connected',connecting:'Connecting',qr:'Awaiting scan',pairing:'Awaiting code',disconnected:'Disconnected'}[s.state]||s.state;
+    $('#ov-stats').innerHTML=
+      tile('Bot status',`<span style="color:${col}">${esc(label)}</span>`,'sm')+
+      tile('Uptime',`<span id="ov-up">${s.connected?fmtDur(connectedSeconds(s)):'—'}</span>`,'sm')+
+      tile('Messages',fmtNum(s.stats.messages))+tile('Active groups',fmtNum(s.stats.groups))+
+      tile('Total users',fmtNum(s.stats.users))+tile('Moderation events',fmtNum(s.stats.moderation))+tile('Total warnings',fmtNum(s.stats.warnings));
+    const a=s.account;
+    $('#ov-acct').innerHTML=`<div class="card-h"><span>WhatsApp account</span><a class="lnk" href="#connection">${s.connected?'Manage':'Connect'}</a></div>`+
+      (a?`<dl class="kv"><dt>Phone</dt><dd class="mono">${esc(a.phone||'—')}</dd><dt>Name</dt><dd>${esc(a.name||'—')}</dd><dt>Session</dt><dd>${s.connected?'<span class="tag ok">Active</span>':'<span class="tag err">Offline</span>'}</dd>${s.version?`<dt>Bot version</dt><dd class="mono">${esc(s.version)}</dd>`:''}</dl>`
+        :empty('No account linked','Link a WhatsApp account from the Connection page.'));
+    $('#ov-health').innerHTML=`<div class="card-h"><span>Service health</span>${s.maintenance?'<span class="tag warn">Maintenance mode</span>':''}</div>`+
+      (s.health.length?s.health.map(h=>`<div class="toggle-row"><div><b>${esc(h.name)}</b>${h.detail?`<small>${esc(h.detail)}</small>`:''}</div><span class="chip"><span class="dot ${h.status==='ok'?'ok':h.status==='degraded'?'warn':'err'}"></span><span class="mono" style="font-size:11px;text-transform:uppercase">${esc(h.status)}</span></span></div>`).join('')
+        :empty('No health data','The backend did not report any service checks.'));
+  }
+  async function loadStatus(){
+    try{ paint(await refreshStatus()); }
+    catch(e){ errBox($('#ov-stats'),e,loadStatus); $('#ov-acct').innerHTML=$('#ov-health').innerHTML=''; }
+  }
+  async function loadAct(){
+    const el=$('#ov-act'); if(!el) return;
+    try{
+      const rows=items(await api(`${EP.logs}?page=1&page_size=8`));
+      el.innerHTML=rows.length?rows.map(r=>`<div class="toggle-row"><div><span class="sev"><span class="dot ${sevDot(r.level)}"></span>${esc(r.level||'info')}</span> <span class="tag">${esc(r.type||'event')}</span><div style="margin-top:6px">${esc(r.message)}</div></div><span class="mono muted" style="font-size:11px;white-space:nowrap">${esc(fmtTime(r.ts))}</span></div>`).join(''):empty('No activity yet','Events will appear here as the bot runs.');
+    }catch(e){ errBox(el,e,loadAct); }
+  }
+  loadStatus(); loadAct();
+  const off=[bus.on('status',s=>{ if($('#ov-stats')&&state.status) paint(s); }),bus.on('activity',debounce(loadAct,500))];
+  tick=setInterval(()=>{ const s=state.status,el=$('#ov-up'); if(s&&s.connected&&el) el.textContent=fmtDur(connectedSeconds(s)); },1000);
+  return ()=>{ off.forEach(f=>f()); clearInterval(tick); };
+};
+const sevDot=l=>({error:'err',critical:'err',warn:'warn',warning:'warn',info:'acc'}[String(l).toLowerCase()]||'');
+
+/* ---- Connection ---- */
+const COUNTRIES=[['US','United States','1'],['CA','Canada','1'],['GB','United Kingdom','44'],['IN','India','91'],['PK','Pakistan','92'],['BD','Bangladesh','880'],['LK','Sri Lanka','94'],['NP','Nepal','977'],['AE','UAE','971'],['SA','Saudi Arabia','966'],['QA','Qatar','974'],['KW','Kuwait','965'],['OM','Oman','968'],['BH','Bahrain','973'],['SG','Singapore','65'],['MY','Malaysia','60'],['ID','Indonesia','62'],['PH','Philippines','63'],['TH','Thailand','66'],['VN','Vietnam','84'],['JP','Japan','81'],['KR','South Korea','82'],['CN','China','86'],['HK','Hong Kong','852'],['AU','Australia','61'],['NZ','New Zealand','64'],['ZA','South Africa','27'],['NG','Nigeria','234'],['KE','Kenya','254'],['EG','Egypt','20'],['TR','Türkiye','90'],['IR','Iran','98'],['IQ','Iraq','964'],['IL','Israel','972'],['RU','Russia','7'],['UA','Ukraine','380'],['DE','Germany','49'],['FR','France','33'],['ES','Spain','34'],['IT','Italy','39'],['NL','Netherlands','31'],['PT','Portugal','351'],['BR','Brazil','55'],['MX','Mexico','52'],['AR','Argentina','54'],['CO','Colombia','57'],['CL','Chile','56'],['PE','Peru','51']].sort((a,b)=>a[1].localeCompare(b[1]));
+views.connection=async root=>{
+  root.innerHTML=head('WhatsApp','Connection','Link the bot to a WhatsApp account using a QR code or a pairing code.')+`<div id="cx">${skel(5)}</div>`;
+  const cx=$('#cx'); let tab='qr', qr=null, pair=null, qrErr='', tick=null, pairing=false;
+  const region=(navigator.language||'').split('-')[1]||'';
+  let cc=(COUNTRIES.find(c=>c[0]===region.toUpperCase())||[])[2]||'';
+  let ccIso=(COUNTRIES.find(c=>c[0]===region.toUpperCase())||[])[0]||'';
+
+  async function loadQR(){
+    qrErr='';
+    try{
+      const r=await api(EP.qr);
+      if(r instanceof Blob){ qr={image:URL.createObjectURL(r)}; }
+      else if(r&&typeof r==='object'){ qr={ code:r.qr||r.code||null, image:r.qr_image||r.image||null, expires:r.expires_at?Date.parse(r.expires_at):null, state:r.state||null }; if(!qr.code&&!qr.image) qr=null; }
+      else qr=null;
+    }catch(e){ qr=null; if(e.status!==404&&e.status!==204) qrErr=e.message; }
+    render();
+  }
+  async function requestQR(btn){
+    await run(btn,async()=>{ await api(EP.qrRefresh,{method:'POST'}); },'Requested a fresh QR code');
+    setTimeout(loadQR,700);
+  }
+  function drawQR(){
+    const box=$('#qrbox'); if(!box||!qr) return;
+    if(qr.image){ box.innerHTML=`<img alt="WhatsApp pairing QR code" src="${esc(qr.image)}">`; return; }
+    if(typeof window.qrcode!=='function'&&MOCK){ box.innerHTML=mockQRSvg(qr.code); return; }
+    if(typeof window.qrcode!=='function'){ box.innerHTML='<div class="qr-wait">The QR renderer could not load (CDN blocked?). Reload the page or allow cdnjs.cloudflare.com.</div>'; return; }
+    try{ const q=window.qrcode(0,'M'); q.addData(qr.code); q.make(); box.innerHTML=q.createSvgTag(6,0); const sv=$('svg',box); sv.setAttribute('role','img'); sv.setAttribute('aria-label','WhatsApp pairing QR code'); }
+    catch{ box.innerHTML='<div class="qr-wait">Could not render this QR payload.</div>'; }
+  }
+  function connectedView(s){
+    const a=s.account||{};
+    cx.innerHTML=`<div class="banner ok"><span class="dot ok"></span><b>Connected to WhatsApp</b></div>
+    <div class="card"><div class="card-h"><span>Linked account</span></div>
+    <dl class="kv"><dt>Phone</dt><dd class="mono">${esc(a.phone||'—')}</dd><dt>Name</dt><dd>${esc(a.name||'—')}</dd><dt>Status</dt><dd><span class="tag ok">Session active</span></dd><dt>Connected for</dt><dd class="mono" id="cx-dur">${fmtDur(connectedSeconds(s))}</dd></dl>
+    <div class="actions" style="margin-top:24px"><button class="btn ghost" id="b-rec" type="button">Reconnect</button><button class="btn ghost" id="b-dis" type="button">Disconnect</button><button class="btn danger" id="b-unl" type="button">Unlink account</button></div>
+    <p class="muted" style="font-size:13px;margin:18px 0 0"><b style="color:var(--text);font-weight:500">Disconnect</b> stops the bot but keeps the session so it can reconnect. <b style="color:var(--text);font-weight:500">Unlink</b> removes the session; you will need to scan a new QR or enter a new pairing code.</p></div>`;
+    $('#b-rec').onclick=e=>run(e.target,async()=>{ await api(EP.reconnect,{method:'POST'}); refreshStatus().catch(()=>{}); },'Reconnecting…');
+    $('#b-dis').onclick=async e=>{ if(await confirmDialog({title:'Disconnect the bot?',body:'The bot will stop responding until it is reconnected. Your linked session is kept.',confirmText:'Disconnect'})) run(e.target,async()=>{ await api(EP.disconnect,{method:'POST'}); await refreshStatus(); },'Disconnected'); };
+    $('#b-unl').onclick=async e=>{ if(await confirmDialog({title:'Unlink this WhatsApp account?',body:'This deletes the bot’s session. To use the bot again you must pair a WhatsApp account from scratch.',confirmText:'Unlink',danger:true})) run(e.target,async()=>{ await api(EP.unlink,{method:'POST'}); qr=null; pair=null; await refreshStatus(); },'Account unlinked'); };
+  }
+  function linkView(s){
+    const msgs={connecting:['warn','Connecting to WhatsApp…'],qr:['warn','Waiting for you to scan the QR code.'],pairing:['warn','Waiting for you to enter the pairing code on your phone.'],disconnected:['err','Not linked. Choose a method below to connect.']};
+    const [c,m]=msgs[s.state]||msgs.disconnected;
+    cx.innerHTML=`<div class="banner ${c}"><span class="dot ${c}"></span><span>${esc(m)}</span></div>
+    <div class="tabs" role="tablist"><button role="tab" data-t="qr" aria-selected="${tab==='qr'}">QR code</button><button role="tab" data-t="pair" aria-selected="${tab==='pair'}">Phone number</button></div><div id="cx-body"></div>`;
+    $$('[data-t]',cx).forEach(b=>b.onclick=()=>{ tab=b.dataset.t; render(); });
+    tab==='qr'?qrPanel():pairPanel();
+  }
+  function qrPanel(){
+    const b=$('#cx-body'); const expired=qr&&qr.expires&&qr.expires<Date.now();
+    const box = qr
+      ? `<div class="qr-box" id="qrbox"></div>`
+      : `<div class="qr-box"><div class="qr-wait">${qrErr?esc(qrErr):'Waiting for the bot to generate a QR code…'}</div></div>`;
+    b.innerHTML=`<div class="link-grid"><div style="position:relative">${box}${expired?`<div class="qr-over"><b>QR code expired</b><button class="btn sm" id="q-new" type="button">Get new QR</button></div>`:''}</div>
+    <div><ol class="steps"><li><span><b>Open WhatsApp</b> on your phone.</span></li><li><span>Go to <b>Settings → Linked devices</b> and tap <b>Link a device</b>.</span></li><li><span><b>Point your camera</b> at this QR code. The page updates automatically once linked.</span></li></ol>
+    <p class="mono muted" style="font-size:12px;margin:22px 0 0" id="q-cd"></p>
+    <div class="actions" style="margin-top:18px"><button class="btn ghost" id="q-ref" type="button">Refresh QR</button>${MOCK?'<button class="btn" id="q-sim" type="button">Simulate scan</button><span class="tag warn">Demo QR · not scannable</span>':''}</div></div></div>`;
+    drawQR();
+    $('#q-ref').onclick=e=>requestQR(e.target);
+    const qs=$('#q-sim'); if(qs) qs.onclick=e=>run(e.target,()=>api('/__mock/connect',{method:'POST'})); const n=$('#q-new'); if(n) n.onclick=e=>requestQR(e.target);
+  }
+  function pairPanel(){
+    const b=$('#cx-body');
+    b.innerHTML=`<div class="link-grid"><div><form class="form" id="f-pair" novalidate>
+      <div class="field"><label for="p-num">WhatsApp phone number</label><div class="phone-row">
+        <select id="p-cc" aria-label="Country code"><option value="">Country</option>${COUNTRIES.map(c=>`<option value="${c[2]}" data-iso="${c[0]}" ${c[0]===ccIso?'selected':''}>${esc(c[1])} (+${c[2]})</option>`).join('')}</select>
+        <input id="p-num" type="tel" inputmode="numeric" autocomplete="tel-national" placeholder="Phone number" aria-describedby="p-h"></div>
+        <div class="hint" id="p-h">Enter the number without the country code. Never share a WhatsApp password or verification SMS. This flow only needs the phone number.</div></div>
+      <div class="err-t" id="p-e" role="alert"></div>
+      <div><button class="btn" type="submit" id="p-go" ${pairing?'disabled':''}>Get pairing code</button></div></form></div>
+      <div id="p-out"></div></div>`;
+    $('#p-cc').onchange=e=>{ cc=e.target.value; ccIso=e.target.selectedOptions[0].dataset.iso||''; };
+    paintPair();
+    $('#f-pair').onsubmit=async ev=>{
+      ev.preventDefault(); const err=$('#p-e');
+      let num=$('#p-num').value.replace(/\D/g,'').replace(/^0+/,'');
+      if(!cc){ err.textContent='Select your country.'; return; }
+      if(num.startsWith(cc)&&num.length>cc.length+6) num=num.slice(cc.length);
+      if(num.length<6||num.length>13){ err.textContent='Enter a valid phone number (6–13 digits, without the country code).'; return; }
+      err.textContent=''; pairing=true; $('#p-go').disabled=true; pair=null;
+      try{
+        const r=await api(EP.pair,{method:'POST',body:{country_code:cc,phone_number:num}});
+        const code=r&&(r.pairing_code||r.code); if(!code) throw new ApiError('The backend did not return a pairing code.',502);
+        pair={code:String(code),phone:`+${cc}${num}`,expires:r.expires_at?Date.parse(r.expires_at):null};
+      }catch(e){ err.textContent=e.message; }
+      pairing=false; const go=$('#p-go'); if(go) go.disabled=false; paintPair();
+    };
+  }
+  function paintPair(){
+    const o=$('#p-out'); if(!o) return;
+    if(!pair){ o.innerHTML=''; return; }
+    const c=pair.code.replace(/[^A-Za-z0-9]/g,''); const shown=c.length===8?c.slice(0,4)+'-'+c.slice(4):pair.code;
+    o.innerHTML=`<div class="eyebrow" style="margin-bottom:10px">Pairing code for ${esc(pair.phone)}</div><div class="code">${esc(shown)}</div>
+    <p class="mono muted" style="font-size:12px;margin:12px 0 22px" id="p-cd"></p>
+    <ol class="steps"><li><span>Open <b>WhatsApp</b> on the phone with this number.</span></li><li><span>Go to <b>Settings → Linked devices → Link a device</b>.</span></li><li><span>Tap <b>Link with phone number instead</b> and enter the code above.</span></li></ol>${MOCK?'<div class="actions" style="margin-top:22px"><button class="btn" id="p-sim" type="button">Simulate entering code</button><span class="tag warn">Demo</span></div>':''}`;
+    const ps=$('#p-sim'); if(ps) ps.onclick=e=>run(e.target,()=>api('/__mock/connect',{method:'POST'}));
+  }
+  function render(){
+    const s=state.status; if(!s){ cx.innerHTML=skel(5); return; }
+    s.connected?connectedView(s):linkView(s);
+  }
+  function cd(){
+    const ds=state.status; const d=$('#cx-dur'); if(d&&ds&&ds.connected) d.textContent=fmtDur(connectedSeconds(ds));
+    const q=$('#q-cd'); if(q&&qr&&qr.expires){ const left=Math.round((qr.expires-Date.now())/1000); q.textContent=left>0?`Code refreshes in ${left}s`:'Code expired'; if(left===0) qrPanel(); }
+    const p=$('#p-cd'); if(p&&pair&&pair.expires){ const left=Math.round((pair.expires-Date.now())/1000); p.textContent=left>0?`Code expires in ${Math.floor(left/60)}:${String(left%60).padStart(2,'0')}`:'Code expired. Request a new one.'; }
+  }
+  let last=null;
+  const onStatus=s=>{
+    const was=last; last=s.state; if(!$('#cx')) return;
+    if(s.connected&&was&&was!=='connected') toast('WhatsApp connected','ok');
+    if(!s.connected&&s.state!=='pairing'&&tab==='qr'&&(was!==s.state||!qr)) loadQR(); else render();
+  };
+  const off=[bus.on('status',onStatus),bus.on('qr',d=>{ qr=d&&(d.qr||d.code||d.qr_image)?{code:d.qr||d.code||null,image:d.qr_image||null,expires:d.expires_at?Date.parse(d.expires_at):null}:null; if(state.status&&!state.status.connected&&tab==='qr') qrPanel(); }),
+    bus.on('pairing',d=>{ if(d&&d.state==='failed'){ toast(d.error||'Pairing failed','err'); pair=null; paintPair(); } }),
+    bus.on('poll',()=>{ const s=state.status; if(s&&!s.connected&&tab==='qr') loadQR(); })];
+  tick=setInterval(cd,1000);
+  try{ await refreshStatus(); }catch(e){ errBox(cx,e,()=>views.connection(root)); return ()=>{ off.forEach(f=>f()); clearInterval(tick); }; }
+  last=state.status.state; if(!state.status.connected) await loadQR(); else render();
+  return ()=>{ off.forEach(f=>f()); clearInterval(tick); };
+};
+
+/* ---- Settings ---- */
+views.settings=async root=>{
+  root.innerHTML=head('Configuration','Settings','General behaviour of the bot.')+`<div class="card" id="st">${skel(6)}</div>`;
+  const el=$('#st');
+  async function load(){
+    let s; try{ s=await api(EP.settings); }catch(e){ errBox(el,e,load); return; }
+    s=s||{}; let tzs=['UTC']; try{ tzs=Intl.supportedValuesOf('timeZone'); }catch{}
+    if(s.timezone&&!tzs.includes(s.timezone)) tzs=[s.timezone,...tzs];
+    const langs=[['en','English'],['hi','हिन्दी'],['ml','മലയാളം'],['ta','தமிழ்'],['ar','العربية'],['es','Español'],['pt','Português'],['id','Bahasa Indonesia'],['fr','Français'],['ru','Русский']];
+    el.innerHTML=`<form class="form" id="f-st" novalidate>
+      <div class="row2"><div class="field"><label for="s-name">Bot name</label><input id="s-name" type="text" maxlength="40" value="${esc(s.bot_name)}"></div>
+      <div class="field"><label for="s-prefix">Command prefix</label><input id="s-prefix" type="text" maxlength="3" value="${esc(s.prefix)}" style="font-family:var(--mono)"><div class="hint">1–3 characters, no spaces.</div></div></div>
+      <div class="field"><label for="s-desc">Description</label><textarea id="s-desc" maxlength="200">${esc(s.description)}</textarea></div>
+      <div class="row2"><div class="field"><label for="s-lang">Language</label><select id="s-lang">${langs.map(l=>`<option value="${l[0]}" ${s.language===l[0]?'selected':''}>${l[1]}</option>`).join('')}</select></div>
+      <div class="field"><label for="s-tz">Timezone</label><select id="s-tz">${tzs.map(z=>`<option ${s.timezone===z?'selected':''}>${esc(z)}</option>`).join('')}</select></div></div>
+      <div><div class="toggle-row"><div><b>Start automatically</b><small>Reconnect to WhatsApp when the bot process starts.</small></div>${sw('s-auto',s.auto_start)}</div>
+      <div class="toggle-row"><div><b>Maintenance mode</b><small>The bot ignores commands from regular users while this is on.</small></div>${sw('s-maint',s.maintenance)}</div></div>
+      <div class="err-t" id="s-e" role="alert"></div>
+      <div><button class="btn" type="submit">Save changes</button></div></form>`;
+    $('#f-st').onsubmit=async ev=>{
+      ev.preventDefault(); const e=$('#s-e'); const name=$('#s-name').value.trim(), prefix=$('#s-prefix').value;
+      if(!name){ e.textContent='Bot name is required.'; return; }
+      if(!/^\S{1,3}$/.test(prefix)){ e.textContent='Prefix must be 1–3 characters with no spaces.'; return; }
+      e.textContent='';
+      if(prefix!==s.prefix && !await confirmDialog({title:`Change prefix to “${prefix}”?`,body:'Users will need to use the new prefix immediately. The old prefix stops working.',confirmText:'Change prefix'})) return;
+      const btn=$('button[type=submit]',el);
+      const ok=await run(btn,async()=>{
+        await api(EP.settings,{method:'PUT',body:{bot_name:name,description:$('#s-desc').value.trim(),language:$('#s-lang').value,timezone:$('#s-tz').value,auto_start:$('#s-auto').checked,maintenance:$('#s-maint').checked}});
+        if(prefix!==s.prefix) await api(EP.prefix,{method:'POST',body:{prefix}});
+        return true;
+      },'Settings saved');
+      if(ok) load();
+    };
+  }
+  load();
+};
+
+/* ---- Commands ---- */
+views.commands=async root=>{
+  root.innerHTML=head('Configuration','Commands','Turn commands on or off and decide who can use them.')+
+    `<div class="card" id="cm-prefix">${skel(2)}</div><div id="cm-list" style="margin-top:16px">${skel(5)}</div>`;
+  let cmds=[], prefix='', q='';
+  const PERMS=[['everyone','Everyone'],['admins','Group admins'],['owner','Owner only']];
+  const perm=c=>c.permission||(c.admin_only?'admins':'everyone');
+  function paintList(){
+    const rows=cmds.filter(c=>!q||(c.name+' '+(c.description||'')).toLowerCase().includes(q));
+    $('#cm-rows').innerHTML=rows.length?rows.map(c=>`<tr><td><span class="mono">${esc(prefix)}${esc(c.name)}</span></td><td class="muted">${esc(c.description||'')}</td>
+      <td><select data-perm="${esc(c.name)}" aria-label="Permission for ${esc(c.name)}" style="min-width:150px">${PERMS.map(p=>`<option value="${p[0]}" ${perm(c)===p[0]?'selected':''}>${p[1]}</option>`).join('')}</select></td>
+      <td class="r">${sw('',c.enabled!==false,`data-en="${esc(c.name)}" aria-label="Enable ${esc(c.name)}"`)}</td></tr>`).join('')
+      :`<tr><td colspan="4">${empty('No commands match','Try a different search.')}</td></tr>`;
+  }
+  async function patch(name,change,revert){
+    const c=cmds.find(x=>x.name===name); const prev={...c}; Object.assign(c,change);
+    const body={enabled:c.enabled!==false,permission:perm(c)}; body.admin_only=body.permission!=='everyone';
+    try{ await api(EP.command(name),{method:'PATCH',body}); toast(`${prefix}${name} updated`,'ok'); }
+    catch(e){ Object.assign(c,prev); paintList(); if(e.status!==401) toast(e.message,'err'); }
+  }
+  async function load(){
+    try{
+      const [st,list]=await Promise.all([api(EP.settings).catch(()=>null),api(EP.commands)]);
+      prefix=(st&&st.prefix)||''; cmds=items(list).map(c=>typeof c==='string'?{name:c}:c);
+    }catch(e){ errBox($('#cm-list'),e,load); $('#cm-prefix').innerHTML=''; return; }
+    $('#cm-prefix').innerHTML=`<div class="card-h"><span>Command prefix</span></div><form class="actions" id="f-px"><input id="px" type="text" maxlength="3" value="${esc(prefix)}" aria-label="Command prefix" style="width:90px;font-family:var(--mono)"><button class="btn" type="submit">Save prefix</button><span class="muted" style="font-size:13px">Applied by the bot immediately.</span></form>`;
+    $('#f-px').onsubmit=async ev=>{
+      ev.preventDefault(); const v=$('#px').value; if(!/^\S{1,3}$/.test(v)){ toast('Prefix must be 1–3 characters with no spaces.','err'); return; }
+      if(v===prefix) return;
+      if(!await confirmDialog({title:`Change prefix to “${v}”?`,body:'The old prefix will stop working right away.',confirmText:'Change prefix'})) return;
+      if(await run($('button',ev.target),()=>api(EP.prefix,{method:'POST',body:{prefix:v}}).then(()=>true),'Prefix updated')){ prefix=v; paintList(); }
+    };
+    $('#cm-list').innerHTML=`<div class="toolbar"><input type="search" id="cm-q" placeholder="Search commands" aria-label="Search commands"></div><div class="tbl-wrap"><table><thead><tr><th>Command</th><th>Description</th><th>Who can use it</th><th class="r">Enabled</th></tr></thead><tbody id="cm-rows"></tbody></table></div>`;
+    $('#cm-q').oninput=debounce(e=>{ q=e.target.value.trim().toLowerCase(); paintList(); },150);
+    $('#cm-rows').onchange=e=>{ const t=e.target;
+      if(t.dataset.en) patch(t.dataset.en,{enabled:t.checked});
+      else if(t.dataset.perm) patch(t.dataset.perm,{permission:t.value,admin_only:t.value!=='everyone'}); };
+    paintList();
+  }
+  load();
+};
+
+/* ---- Groups ---- */
+views.groups=async root=>{
+  root.innerHTML=head('Management','Groups','Choose where the bot is active and how it behaves in each group.')+
+    `<div class="toolbar"><input type="search" id="g-q" placeholder="Search groups" aria-label="Search groups"></div><div id="g-list">${skel(5)}</div>`;
+  let groups=[], q='';
+  const g2=g=>typeof g==='string'?{id:g,name:g}:g;
+  function paint(){
+    const rows=groups.filter(g=>!q||String(g.name).toLowerCase().includes(q));
+    const el=$('#g-list');
+    if(!groups.length){ el.innerHTML=empty('No groups found','The bot is not in any WhatsApp groups yet.'); return; }
+    el.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>Group</th><th class="r">Members</th><th>Moderation</th><th class="r">Bot</th><th class="r">Welcome</th><th></th></tr></thead><tbody>${rows.map(g=>`<tr>
+      <td><b style="font-weight:500">${esc(g.name||g.id)}</b></td><td class="r mono">${fmtNum(g.members)}</td>
+      <td>${g.moderation_enabled?'<span class="tag acc">On</span>':'<span class="tag">Off</span>'}</td>
+      <td class="r">${sw('',g.bot_enabled!==false,`data-id="${esc(g.id)}" data-f="bot_enabled" aria-label="Bot enabled in ${esc(g.name)}"`)}</td>
+      <td class="r">${sw('',!!g.welcome_enabled,`data-id="${esc(g.id)}" data-f="welcome_enabled" aria-label="Welcome message in ${esc(g.name)}"`)}</td>
+      <td class="r"><button class="btn ghost sm" data-cfg="${esc(g.id)}">Configure</button></td></tr>`).join('')||`<tr><td colspan="6">${empty('No groups match')}</td></tr>`}</tbody></table></div>`;
+  }
+  async function patch(id,change){
+    const g=groups.find(x=>x.id===id); const prev={...g}; Object.assign(g,change);
+    try{ await api(EP.group(id),{method:'PATCH',body:change}); toast('Group updated','ok'); }
+    catch(e){ Object.assign(g,prev); paint(); if(e.status!==401) toast(e.message,'err'); }
+  }
+  async function configure(id){
+    let g,cmds=[];
+    try{ [g,cmds]=await Promise.all([api(EP.group(id)),api(EP.commands).then(items).catch(()=>[])]); }catch(e){ toast(e.message,'err'); return; }
+    g=g2(g||{id}); const dis=new Set(g.disabled_commands||[]);
+    openModal(`<h3>${esc(g.name||id)}</h3><p>${fmtNum(g.members)} members</p><form class="form" id="f-g">
+      <div><div class="toggle-row"><div><b>Bot enabled</b><small>Respond to commands in this group.</small></div>${sw('g-bot',g.bot_enabled!==false)}</div>
+      <div class="toggle-row"><div><b>Welcome messages</b></div>${sw('g-wel',!!g.welcome_enabled)}</div>
+      <div class="toggle-row"><div><b>Media moderation</b><small>Scan media in this group against enrolled references.</small></div>${sw('g-mod',!!g.moderation_enabled)}</div>
+      <div class="toggle-row"><div><b>Admin-only commands</b><small>Only group admins can use the bot here.</small></div>${sw('g-adm',!!g.admin_only_commands)}</div></div>
+      <div class="field"><label for="g-msg">Welcome message</label><textarea id="g-msg" maxlength="500">${esc(g.welcome_message)}</textarea></div>
+      ${cmds.length?`<div class="field"><span class="lbl">Disable commands in this group</span><div style="display:flex;flex-wrap:wrap;gap:8px 18px">${cmds.map(c=>{const n=typeof c==='string'?c:c.name;return `<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-dc="${esc(n)}" ${dis.has(n)?'checked':''}> <span class="mono" style="font-size:13px">${esc(n)}</span></label>`}).join('')}</div></div>`:''}
+      ${(g.admins||[]).length?`<div class="field"><span class="lbl">Group admins</span><div class="muted" style="font-size:14px">${g.admins.map(a=>esc(a.name||maskId(a.jid||a))).join(', ')}</div></div>`:''}
+      <div class="dlg-f"><button class="btn ghost" type="button" id="g-x">Cancel</button><button class="btn" type="submit">Save</button></div></form>`,m=>{
+      $('#g-x',m).onclick=()=>m.close();
+      $('#f-g',m).onsubmit=async ev=>{
+        ev.preventDefault();
+        const body={bot_enabled:$('#g-bot',m).checked,welcome_enabled:$('#g-wel',m).checked,moderation_enabled:$('#g-mod',m).checked,admin_only_commands:$('#g-adm',m).checked,welcome_message:$('#g-msg',m).value.trim(),disabled_commands:$$('[data-dc]:checked',m).map(x=>x.dataset.dc)};
+        if(await run($('button[type=submit]',m),()=>api(EP.group(id),{method:'PATCH',body}).then(()=>true),'Group settings saved')){ Object.assign(groups.find(x=>x.id===id)||{},body); paint(); m.close(); }
+      };
+    });
+  }
+  async function load(){
+    try{ groups=items(await api(EP.groups)).map(g2); }catch(e){ errBox($('#g-list'),e,load); return; }
+    paint();
+  }
+  $('#g-q').oninput=debounce(e=>{ q=e.target.value.trim().toLowerCase(); paint(); },150);
+  $('#g-list').onchange=e=>{ const t=e.target; if(t.dataset.f) patch(t.dataset.id,{[t.dataset.f]:t.checked}); };
+  $('#g-list').onclick=e=>{ const b=e.target.closest('[data-cfg]'); if(b) configure(b.dataset.cfg); };
+  load();
+};
+
+/* ---- Moderation ---- */
+views.moderation=async root=>{
+  root.innerHTML=head('Safety','Media moderation','Match shared media against enrolled references and apply warnings.')+
+    `<div class="tabs" role="tablist" id="m-tabs">${[['settings','Settings'],['enrolled','Enrolled media'],['matches','Detections'],['history','History']].map(([k,l])=>`<button role="tab" data-t="${k}">${l}</button>`).join('')}</div><div id="m-body"></div>`;
+  let tab='settings', page=1; const SIZE=20;
+  const body=()=>$('#m-body');
+  const tabs=()=>$$('#m-tabs button').forEach(b=>b.setAttribute('aria-selected',b.dataset.t===tab));
+  const MT={image:'Image',sticker:'Sticker',video:'Video',audio:'Audio',voice:'Voice note',ptt:'Voice note'};
+  async function tSettings(){
+    body().innerHTML=`<div class="card">${skel(6)}</div>`; let s;
+    try{ s=await api(EP.modSettings); }catch(e){ errBox(body(),e,tSettings); return; }
+    s=s||{}; const hi=pct(s.high_confidence??0.9), lo=pct(s.possible_confidence??0.6);
+    body().innerHTML=`<div class="card"><form class="form" id="f-m" novalidate>
+      <div><div class="toggle-row"><div><b>Moderation enabled</b><small>Scan incoming media in groups where moderation is on.</small></div>${sw('m-en',s.enabled)}</div>
+      <div class="toggle-row"><div><b>Dry-run mode</b><small>Log detections but take no action. Use this to test.</small></div>${sw('m-dry',s.dry_run)}</div>
+      <div class="toggle-row"><div><b>Delete matching messages</b><small>Automatically delete high-confidence matches (needs admin rights in the group).</small></div>${sw('m-del',s.auto_delete)}</div>
+      <div class="toggle-row"><div><b>Remove user on final violation</b><small>Remove the sender from the group once they reach the violation below.</small></div>${sw('m-rm',s.removal_enabled)}</div></div>
+      <div class="row2"><div class="field"><label for="m-warn">Warnings before action</label><input id="m-warn" type="number" min="1" max="10" value="${esc(s.warning_threshold??3)}"><div class="hint">Warnings issued before the removal step applies.</div></div>
+      <div class="field"><label for="m-viol">Removal on violation #</label><input id="m-viol" type="number" min="1" max="10" value="${esc(s.removal_violation??4)}"><div class="hint">For example 4 removes the user on their fourth violation.</div></div></div>
+      <div class="field"><label for="m-hi">High-confidence threshold: <b id="m-hi-v" class="mono">${hi}%</b></label><input id="m-hi" type="range" min="50" max="100" value="${hi}"><div class="hint">Matches at or above this score are treated as violations.</div></div>
+      <div class="field"><label for="m-lo">“Possible match” threshold: <b id="m-lo-v" class="mono">${lo}%</b></label><input id="m-lo" type="range" min="10" max="100" value="${lo}"><div class="hint">Matches between this and the high threshold go to manual review.</div></div>
+      <div class="err-t" id="m-e" role="alert"></div><div><button class="btn" type="submit">Save moderation settings</button></div></form></div>`;
+    $('#m-hi').oninput=e=>$('#m-hi-v').textContent=e.target.value+'%'; $('#m-lo').oninput=e=>$('#m-lo-v').textContent=e.target.value+'%';
+    $('#f-m').onsubmit=async ev=>{
+      ev.preventDefault(); const h=+$('#m-hi').value, l=+$('#m-lo').value, w=+$('#m-warn').value, v=+$('#m-viol').value;
+      if(l>=h){ $('#m-e').textContent='The “possible” threshold must be lower than the high-confidence threshold.'; return; }
+      if(!(w>=1&&v>=1)){ $('#m-e').textContent='Thresholds must be at least 1.'; return; }
+      $('#m-e').textContent='';
+      const turningOn=!$('#m-dry').checked&&(s.dry_run||!s.enabled)&&$('#m-en').checked;
+      if(turningOn&&!await confirmDialog({title:'Enable live moderation?',body:'Dry-run is off, so warnings, deletions and removals will really happen.',confirmText:'Enable'})) return;
+      await run($('button[type=submit]',body()),()=>api(EP.modSettings,{method:'PUT',body:{enabled:$('#m-en').checked,dry_run:$('#m-dry').checked,auto_delete:$('#m-del').checked,removal_enabled:$('#m-rm').checked,warning_threshold:w,removal_violation:v,high_confidence:h/100,possible_confidence:l/100}}),'Moderation settings saved');
+    };
+  }
+  async function tEnrolled(){
+    body().innerHTML=`<div class="card">${skel(5)}</div>`; let rows;
+    try{ rows=items(await api(EP.modEnrolled)); }catch(e){ errBox(body(),e,tEnrolled); return; }
+    body().innerHTML=rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Reference</th><th>Type</th><th>Enrolled</th><th>Enrolled by</th><th></th></tr></thead><tbody>${rows.map(r=>`<tr><td class="mono" style="font-size:13px">${esc(r.label||r.id)}</td><td><span class="tag">${esc(MT[r.type]||r.type||'Media')}</span></td><td class="muted">${esc(fmtTime(r.enrolled_at||r.created_at))}</td><td>${esc(r.enrolled_by_name||maskId(r.enrolled_by))}</td><td class="r"><button class="btn danger sm" data-del="${esc(r.id)}">Remove</button></td></tr>`).join('')}</tbody></table></div>`
+      :empty('Nothing enrolled','Enrolled references appear here once added through the bot.');
+    body().onclick=async e=>{ const b=e.target.closest('[data-del]'); if(!b) return;
+      if(!await confirmDialog({title:'Remove this reference?',body:'The bot will stop matching media against it. This cannot be undone.',confirmText:'Remove',danger:true})) return;
+      if(await run(b,()=>api(EP.modEnrolledItem(b.dataset.del),{method:'DELETE'}).then(()=>true),'Reference removed')) tEnrolled(); };
+  }
+  async function tMatches(){
+    body().innerHTML=`<div class="card">${skel(5)}</div>`; let hi,po;
+    try{ [hi,po]=await Promise.all([api(`${EP.modMatches}?tier=high`).then(items),api(`${EP.modMatches}?tier=possible`).then(items)]); }catch(e){ errBox(body(),e,tMatches); return; }
+    const row=(r,review)=>`<tr><td class="muted">${esc(fmtTime(r.ts||r.detected_at))}</td><td>${esc(r.user_name||maskId(r.user))}</td><td>${esc(r.group_name||r.group||'—')}</td><td><span class="tag">${esc(MT[r.type]||r.type||'Media')}</span></td><td><span class="conf"><i style="width:${pct(r.confidence)}%"></i></span><span class="mono">${pct(r.confidence)}%</span></td><td>${r.status?`<span class="tag ${r.status==='dismissed'?'':'acc'}">${esc(r.status)}</span>`:''}</td>${review?`<td class="r" style="white-space:nowrap"><button class="btn sm" data-rv="confirm" data-id="${esc(r.id)}">Confirm</button> <button class="btn ghost sm" data-rv="dismiss" data-id="${esc(r.id)}">Dismiss</button></td>`:''}</tr>`;
+    const tbl=(rows,review,msg)=>rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Detected</th><th>User</th><th>Group</th><th>Type</th><th>Confidence</th><th>Status</th>${review?'<th class="r">Review</th>':''}</tr></thead><tbody>${rows.map(r=>row(r,review)).join('')}</tbody></table></div>`:empty(msg);
+    body().innerHTML=`<div class="card-h" style="margin-bottom:12px"><span>High-confidence matches</span><span>${hi.length}</span></div>${tbl(hi,false,'No high-confidence matches')}
+      <div class="card-h" style="margin:32px 0 12px"><span>Possible matches · needs review</span><span>${po.length}</span></div>${tbl(po,true,'Nothing waiting for review')}`;
+    body().onclick=async e=>{ const b=e.target.closest('[data-rv]'); if(!b) return; const d=b.dataset.rv;
+      if(!await confirmDialog({title:d==='confirm'?'Confirm this as a violation?':'Dismiss this detection?',body:d==='confirm'?'The sender will receive a warning and any enabled actions (deletion, removal) will apply.':'It will be marked as a false positive and no action is taken.',confirmText:d==='confirm'?'Confirm violation':'Dismiss',danger:d==='confirm'})) return;
+      if(await run(b,()=>api(EP.modReview(b.dataset.id),{method:'POST',body:{decision:d}}).then(()=>true),d==='confirm'?'Violation confirmed':'Detection dismissed')) tMatches(); };
+  }
+  async function tHistory(){
+    body().innerHTML=`<div class="card">${skel(5)}</div>`; let d;
+    try{ d=await api(`${EP.modHistory}?page=${page}&page_size=${SIZE}`); }catch(e){ errBox(body(),e,tHistory); return; }
+    const rows=items(d), total=totalOf(d,rows.length);
+    body().innerHTML=rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Time</th><th>User</th><th>Group</th><th>Action</th><th>Details</th></tr></thead><tbody>${rows.map(r=>`<tr><td class="muted" style="white-space:nowrap">${esc(fmtTime(r.ts))}</td><td>${esc(r.user_name||maskId(r.user))}</td><td>${esc(r.group_name||r.group||'—')}</td><td><span class="tag ${r.dry_run?'':'acc'}">${esc(r.action)}${r.dry_run?' · dry run':''}</span></td><td class="muted">${esc(r.detail||'')}</td></tr>`).join('')}</tbody></table></div>${pager(total,page,SIZE)}`:empty('No moderation history','Actions taken by the moderation system will be listed here.');
+    body().onclick=e=>{ const b=e.target.closest('[data-pg]'); if(b&&!b.disabled){ page=+b.dataset.pg; tHistory(); } };
+  }
+  const T={settings:tSettings,enrolled:tEnrolled,matches:tMatches,history:tHistory};
+  $('#m-tabs').onclick=e=>{ const b=e.target.closest('[data-t]'); if(!b) return; tab=b.dataset.t; page=1; tabs(); T[tab](); };
+  tabs(); T[tab]();
+  return bus.on('moderation',debounce(()=>{ if($('#m-body')&&(tab==='matches'||tab==='history')) T[tab](); },800));
+};
+
+/* ---- Users ---- */
+views.users=async root=>{
+  root.innerHTML=head('Management','Users','Warning counts and moderation history. Phone numbers are masked.')+
+    `<div class="toolbar"><input type="search" id="u-q" placeholder="Search by name" aria-label="Search users"><select id="u-g" aria-label="Filter by group"><option value="">All groups</option></select></div><div id="u-list">${skel(5)}</div>`;
+  let page=1; const SIZE=25;
+  async function load(){
+    const el=$('#u-list'); el.innerHTML=skel(5);
+    const q=$('#u-q').value.trim(), g=$('#u-g').value; let d;
+    try{ d=await api(`${EP.users}?page=${page}&page_size=${SIZE}${q?`&q=${enc(q)}`:''}${g?`&group=${enc(g)}`:''}`); }catch(e){ errBox(el,e,load); return; }
+    const rows=items(d), total=totalOf(d,rows.length);
+    el.innerHTML=rows.length?`<div class="tbl-wrap"><table><thead><tr><th>User</th><th>Group</th><th>Role</th><th class="r">Warnings</th><th></th></tr></thead><tbody>${rows.map(u=>`<tr><td><b style="font-weight:500">${esc(u.name||'Unknown')}</b> <span class="mono muted" style="font-size:12px">${esc(u.display||maskId(u.jid))}</span></td><td>${esc(u.group_name||u.group||'—')}</td><td>${u.is_admin?'<span class="tag acc">Admin</span>':'<span class="tag">Member</span>'}</td><td class="r mono">${fmtNum(u.warnings)}</td><td class="r"><button class="btn ghost sm" data-u="${esc(u.jid)}" data-n="${esc(u.name||'User')}">History</button></td></tr>`).join('')}</tbody></table></div>${pager(total,page,SIZE)}`:empty('No users found','Users appear after they interact with the bot or trigger moderation.');
+  }
+  async function hist(jid,name){
+    const m=openModal(`<h3>${esc(name)}</h3><p class="mono">${esc(maskId(jid))}</p><div id="uh">${skel(4)}</div><div class="dlg-f"><button class="btn ghost" id="uh-x" type="button">Close</button></div>`,m=>{ $('#uh-x',m).onclick=()=>m.close(); });
+    try{
+      const d=await api(EP.userHistory(jid)); const rows=items(d.history||d), w=d.warnings??null;
+      $('#uh',m).innerHTML=`${w!=null?`<div class="banner ${w?'warn':'ok'}"><b>${fmtNum(w)}</b> active warning${w===1?'':'s'}${w?'<span style="flex:1"></span><button class="btn danger sm" id="uh-r" type="button">Reset warnings</button>':''}</div>`:''}
+        ${rows.length?rows.map(r=>`<div class="toggle-row"><div><span class="tag acc">${esc(r.action||r.type)}</span><div style="margin-top:6px">${esc(r.detail||r.message||'')}</div></div><span class="mono muted" style="font-size:11px;white-space:nowrap">${esc(fmtTime(r.ts))}</span></div>`).join(''):empty('No history','No warnings or moderation actions recorded.')}`;
+      const r=$('#uh-r',m); if(r) r.onclick=async()=>{ if(!await confirmDialog({title:'Reset warnings?',body:`Clear all active warnings for ${name}. Their history stays in the log.`,confirmText:'Reset',danger:true})) return;
+        if(await run(r,()=>api(EP.userReset(jid),{method:'POST'}).then(()=>true),'Warnings reset')){ m.close(); load(); } };
+    }catch(e){ errBox($('#uh',m),e,()=>hist(jid,name)); }
+  }
+  async function groupsFilter(){ try{ items(await api(EP.groups)).forEach(g=>{ g=typeof g==='string'?{id:g,name:g}:g; $('#u-g').insertAdjacentHTML('beforeend',`<option value="${esc(g.id)}">${esc(g.name||g.id)}</option>`); }); }catch{} }
+  $('#u-q').oninput=debounce(()=>{ page=1; load(); },350); $('#u-g').onchange=()=>{ page=1; load(); };
+  $('#u-list').onclick=e=>{ const p=e.target.closest('[data-pg]'); if(p&&!p.disabled){ page=+p.dataset.pg; load(); return; } const b=e.target.closest('[data-u]'); if(b) hist(b.dataset.u,b.dataset.n); };
+  groupsFilter(); load();
+};
+
+/* ---- Activity log ---- */
+views.logs=async root=>{
+  root.innerHTML=head('Audit','Activity','Everything the bot and dashboard have done.')+
+    `<div class="toolbar"><input type="search" id="l-q" placeholder="Search activity" aria-label="Search activity">
+     <select id="l-lv" aria-label="Severity"><option value="">All severities</option><option>info</option><option>warning</option><option>error</option></select>
+     <select id="l-ty" aria-label="Type"><option value="">All types</option>${['connection','system','command','config','moderation','group','error'].map(t=>`<option>${t}</option>`).join('')}</select></div>
+     <div id="l-list">${skel(6)}</div>`;
+  let page=1; const SIZE=25;
+  async function load(){
+    const el=$('#l-list'); if(!el) return; const q=$('#l-q').value.trim(), lv=$('#l-lv').value, ty=$('#l-ty').value; let d;
+    try{ d=await api(`${EP.logs}?page=${page}&page_size=${SIZE}${q?`&q=${enc(q)}`:''}${lv?`&level=${enc(lv)}`:''}${ty?`&type=${enc(ty)}`:''}`); }catch(e){ errBox(el,e,load); return; }
+    const rows=items(d), total=totalOf(d,rows.length);
+    el.innerHTML=rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Time</th><th>Severity</th><th>Type</th><th>Message</th></tr></thead><tbody>${rows.map(r=>`<tr><td class="mono muted" style="font-size:12px;white-space:nowrap">${esc(fmtTime(r.ts))}</td><td><span class="sev"><span class="dot ${sevDot(r.level)}"></span>${esc(r.level||'info')}</span></td><td><span class="tag">${esc(r.type||'event')}</span></td><td>${esc(r.message)}</td></tr>`).join('')}</tbody></table></div>${pager(total,page,SIZE)}`:empty('No matching activity','Adjust the search or filters.');
+  }
+  const reset=debounce(()=>{ page=1; load(); },350);
+  $('#l-q').oninput=reset; $('#l-lv').onchange=reset; $('#l-ty').onchange=reset;
+  $('#l-list').onclick=e=>{ const b=e.target.closest('[data-pg]'); if(b&&!b.disabled){ page=+b.dataset.pg; load(); window.scrollTo(0,0); } };
+  load();
+  return bus.on('activity',debounce(()=>{ if(page===1&&!$('#l-q').value&&!$('#l-lv').value&&!$('#l-ty').value) load(); },800));
+};
+
+/* =====================================================================
+   MOCK BACKEND (demo mode). Only used when MOCK is true. Delete this block
+   and the MOCK checks above once you wire the real backend.
+   ===================================================================== */
+const rnd=(a,b)=>Math.floor(Math.random()*(b-a+1))+a;
+const pick=a=>a[rnd(0,a.length-1)];
+const hex=n=>Array.from({length:n},()=>rnd(0,15).toString(16)).join('');
+const alnum=n=>Array.from({length:n},()=>'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'[rnd(0,63)]).join('');
+const iso=t=>new Date(t).toISOString();
+const newQR=()=>({code:`2@${alnum(64)},${alnum(44)},${alnum(22)}==`,expires:Date.now()+30000});
+const MEDIA=['image','sticker','video','audio','voice'];
+const M=(()=>{
+  const now=Date.now();
+  const first=['Aarav','Meera','Rohan','Fatima','Liam','Sofia','Kenji','Priya','Omar','Elena','Arjun','Nadia','Tomás','Isha','Yusuf','Hana'];
+  const last=['Nair','Khan','Silva','Sato','Mehta','Ortiz','Ali','Verma','Costa','Iyer'];
+  const gnames=['Kochi Tech Meetup','College Friends 2019','Neighbourhood Watch','Cricket Weekend Squad','Photography Club','Startup Founders','Book Readers','Gaming Night','Family Circle','Office Announcements'];
+  const defs=[['ping','Check that the bot is alive'],['help','List available commands'],['menu','Show the main menu'],['sticker','Turn an image or video into a sticker'],['tagall','Mention every member of the group'],['kick','Remove a member'],['promote','Make a member admin'],['demote','Remove admin rights'],['antilink','Delete invite links from non-admins'],['welcome','Configure the welcome message'],['warn','Warn a member'],['mute','Mute the group for non-admins'],['weather','Current weather for a city'],['translate','Translate replied text']];
+  const commands=defs.map(([name,description],i)=>({name,description,enabled:i!==11,permission:['kick','promote','demote','mute','antilink','tagall'].includes(name)?'admins':'everyone'}));
+  const users=Array.from({length:42},(_,i)=>({jid:`1555${rnd(1000000,9999999)}@s.whatsapp.net`,name:`${pick(first)} ${pick(last)}`,gi:rnd(0,gnames.length-1),is_admin:Math.random()<.15,warnings:0}));
+  const groups=gnames.map((name,i)=>({id:`1203630${1000+i}@g.us`,name,members:rnd(8,240),bot_enabled:i!==6,welcome_enabled:i%3===0,moderation_enabled:i%2===0,admin_only_commands:i===9,welcome_message:i%3===0?`Welcome to ${name}! Please read the pinned rules.`:'',disabled_commands:i===2?['tagall']:[],admins:users.filter(u=>u.gi===i&&u.is_admin).map(u=>({jid:u.jid,name:u.name}))}));
+  users.forEach(u=>{ const g=groups[u.gi]; u.group=g.id; u.group_name=g.name; });
+  let t=now; const acts=[['warning','Warning issued'],['message deleted','Message removed automatically'],['dry run','Would have deleted message (dry run)'],['removed','User removed after final violation']];
+  const history=Array.from({length:30},()=>{ t-=rnd(20,240)*60e3; const u=users[rnd(0,11)],[action,detail]=pick(acts); return {ts:iso(t),user:u.jid,user_name:u.name,group:u.group,group_name:u.group_name,action,dry_run:action==='dry run',detail}; });
+  users.forEach(u=>{ u.warnings=history.filter(h=>h.user===u.jid&&h.action==='warning').length; });
+  const pool=[['info','connection','WhatsApp connected'],['info','command','Command used in {g}'],['info','command','Command used in {g}'],['info','config','Settings updated from dashboard'],['warning','moderation','Possible match (74%) queued for review in {g}'],['info','moderation','Warning issued to a user in {g}'],['warning','moderation','Message deletion skipped: bot is not admin in {g}'],['error','system','Webhook delivery failed: timeout after 10s'],['info','group','Welcome message sent in {g}'],['info','system','Bot started (v0.1.0-demo)'],['warning','connection','Socket dropped, reconnecting'],['info','moderation','Media enrolled: image ref-3fa91c']];
+  t=now; const logs=Array.from({length:90},(_,i)=>{ t-=rnd(2,40)*60e3; const [level,type,m]=pool[i%pool.length===0?rnd(0,pool.length-1):rnd(0,pool.length-1)]; return {id:'l'+i,ts:iso(t),level,type,message:m.replace('{g}',pick(gnames))}; });
+  const mk=(hi)=>{ const u=pick(users); return {id:'m_'+hex(6),ts:iso(now-rnd(1,2000)*60e3),user:u.jid,user_name:u.name,group_name:u.group_name,type:pick(MEDIA),confidence:hi?.9+Math.random()*.099:.6+Math.random()*.29}; };
+  return {
+    conn:{state:'connected',since:now-(3*3600+27*60)*1000}, linked:true,
+    account:{jid:'15550100199:12@s.whatsapp.net',phone:'+1 555 010 0199',name:'Sonicos Bot'},
+    messages:18432, qr:newQR(), groups, users, commands, history, logs,
+    settings:{bot_name:'Sonicos',prefix:'.',description:'A helpful WhatsApp assistant for community groups.',language:'en',timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC',auto_start:true,maintenance:false},
+    mod:{enabled:true,dry_run:true,auto_delete:false,removal_enabled:true,warning_threshold:3,removal_violation:4,high_confidence:.9,possible_confidence:.6},
+    enrolled:Array.from({length:8},(_,i)=>({id:'e_'+hex(6),label:'ref-'+hex(6),type:MEDIA[i%5],enrolled_at:iso(now-(i+1)*86400e3*rnd(1,4)),enrolled_by_name:pick(first)+' '+pick(last)})),
+    matches:{high:Array.from({length:6},()=>mk(true)).sort((a,b)=>b.ts.localeCompare(a.ts)),possible:Array.from({length:5},()=>mk(false)).sort((a,b)=>b.ts.localeCompare(a.ts))},
+    mk, gnames
+  };
+})();
+function mockStatus(){
+  const c=M.conn;
+  return {state:c.state,connected:c.state==='connected',account:M.linked?M.account:null,
+    connected_since:c.state==='connected'?iso(c.since):null,
+    stats:{messages:M.messages,groups:M.groups.filter(g=>g.bot_enabled).length,users:M.users.length,moderation_events:M.history.length,warnings:M.users.reduce((a,u)=>a+u.warnings,0)},
+    health:[{name:'WhatsApp socket',status:c.state==='connected'?'ok':'down',detail:c.state==='connected'?'Connected, ping 82 ms':'Not connected'},
+      {name:'Database',status:'ok',detail:'Session store healthy'},
+      {name:'Media scanner',status:'ok',detail:'Average 140 ms per item'},
+      {name:'Webhook queue',status:'degraded',detail:'3 pending deliveries'}],
+    maintenance:M.settings.maintenance,version:'v0.1.0-demo'};
+}
+function mockPush(){ applyStatus(mockStatus()); }
+function mockLog(level,type,message){ const e={id:'l'+hex(6),ts:iso(Date.now()),level,type,message}; M.logs.unshift(e); bus.emit('activity',e); }
+/* Offline-safe stand-in for the QR renderer (demo only, deliberately not scannable). */
+function mockQRSvg(seed){
+  let h=2166136261; for(const ch of String(seed)){ h^=ch.charCodeAt(0); h=Math.imul(h,16777619); }
+  const rand=()=>{ h^=h<<13; h^=h>>>17; h^=h<<5; return ((h>>>0)%1000)/1000; };
+  const N=29, f=(x,y)=>(x<8&&y<8)||(x>=N-8&&y<8)||(x<8&&y>=N-8); let d='';
+  const finder=(ox,oy)=>{ for(let i=0;i<7;i++)for(let j=0;j<7;j++){ const edge=i===0||j===0||i===6||j===6, core=i>=2&&i<=4&&j>=2&&j<=4; if(edge||core) d+=`M${ox+i} ${oy+j}h1v1h-1z`; } };
+  finder(0,0); finder(N-7,0); finder(0,N-7);
+  for(let y=0;y<N;y++)for(let x=0;x<N;x++){ if(!f(x,y)&&rand()<.48) d+=`M${x} ${y}h1v1h-1z`; }
+  return `<svg viewBox="-1 -1 ${N+2} ${N+2}" role="img" aria-label="Demo QR placeholder" shape-rendering="crispEdges"><path d="${d}" fill="#111"/></svg>`;
+}
+let mockTimer=null;
+function mockStartSim(){
+  mockStopSim();
+  mockTimer=setInterval(()=>{
+    if(M.conn.state!=='connected') return;
+    M.messages+=rnd(1,9); mockPush();
+    const r=Math.random();
+    if(r<.45) mockLog('info','command',`Command ${M.settings.prefix}${pick(M.commands).name} used in ${pick(M.groups).name}`);
+    else if(r<.6){ const m=M.mk(false); M.matches.possible.unshift(m); mockLog('warning','moderation',`Possible match (${pct(m.confidence)}%) queued for review in ${m.group_name}`); bus.emit('moderation',m); }
+  },5000);
+}
+function mockStopSim(){ clearInterval(mockTimer); mockTimer=null; }
+async function mockApi(path,method='GET',body){
+  await new Promise(r=>setTimeout(r,140+Math.random()*280));
+  const u=new URL(path,'http://mock'), p=u.pathname, q=u.searchParams, g=k=>q.get(k)||'';
+  const page=+g('page')||1, size=+g('page_size')||20;
+  const paged=rows=>({items:rows.slice((page-1)*size,page*size),total:rows.length});
+  const bad=(m,s=400)=>{ throw new ApiError(m,s); };
+  const tail=pre=>decodeURIComponent(p.slice(pre.length));
+  const c=M.conn, post=method==='POST';
+  if(p===EP.me) return {authenticated:true};
+  if(p===EP.login||p===EP.logout) return {ok:true};
+  if(p===EP.status) return mockStatus();
+  if(p==='/__mock/connect'){ M.linked=true; c.state='connected'; c.since=Date.now(); mockLog('info','connection','WhatsApp connected'); mockPush(); return {ok:true}; }
+  if(p===EP.qr){
+    if(c.state==='connected') bad('Already connected',409);
+    if(c.state==='disconnected'){ c.state='qr'; M.qr=newQR(); setTimeout(mockPush,30); }
+    return {state:'qr',qr:M.qr.code,expires_at:iso(M.qr.expires)};
+  }
+  if(p===EP.qrRefresh&&post){ M.qr=newQR(); if(c.state==='disconnected'){ c.state='qr'; mockPush(); } bus.emit('qr',{qr:M.qr.code,expires_at:iso(M.qr.expires)}); return {ok:true}; }
+  if(p===EP.pair&&post){
+    if(!body||!/^\d{1,4}$/.test(body.country_code||'')||!/^\d{6,13}$/.test(body.phone_number||'')) bad('Enter a valid phone number.');
+    if(c.state==='connected') bad('Already connected. Unlink the account first.',409);
+    c.state='pairing'; mockPush();
+    const code=Array.from({length:8},()=>'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[rnd(0,31)]).join('');
+    return {pairing_code:code,expires_at:iso(Date.now()+120000)};
+  }
+  if(p===EP.reconnect&&post){ c.state='connecting'; mockPush(); setTimeout(()=>{ c.state='connected'; c.since=Date.now(); mockLog('info','connection','WhatsApp reconnected'); mockPush(); },1600); return {ok:true}; }
+  if(p===EP.disconnect&&post){ c.state='disconnected'; mockLog('warning','connection','Disconnected from dashboard'); mockPush(); return {ok:true}; }
+  if(p===EP.unlink&&post){ c.state='disconnected'; M.linked=false; mockLog('warning','connection','Account unlinked from dashboard'); mockPush(); return {ok:true}; }
+  if(p===EP.settings){
+    if(method==='PUT'){ ['bot_name','description','language','timezone','auto_start','maintenance'].forEach(k=>{ if(body&&k in body) M.settings[k]=body[k]; }); mockLog('info','config','Settings updated from dashboard'); mockPush(); }
+    return {...M.settings};
+  }
+  if(p===EP.prefix&&post){ if(!body||!/^\S{1,3}$/.test(body.prefix||'')) bad('Invalid prefix.'); M.settings.prefix=body.prefix; mockLog('info','config',`Command prefix changed to “${body.prefix}”`); return {ok:true}; }
+  if(p===EP.commands) return M.commands.map(x=>({...x}));
+  if(p.startsWith(EP.commands+'/')&&method==='PATCH'){
+    const cm=M.commands.find(x=>x.name===tail(EP.commands+'/')); if(!cm) bad('Unknown command',404);
+    if('enabled' in body) cm.enabled=!!body.enabled; if(body.permission) cm.permission=body.permission;
+    mockLog('info','config',`Command ${cm.name} updated`); return {...cm};
+  }
+  if(p===EP.groups) return M.groups.map(({admins,disabled_commands,welcome_message,...r})=>r);
+  if(p.startsWith(EP.groups+'/')){
+    const gr=M.groups.find(x=>x.id===tail(EP.groups+'/')); if(!gr) bad('Group not found',404);
+    if(method==='PATCH'){ Object.assign(gr,body); mockLog('info','group',`Settings changed for ${gr.name}`); }
+    return {...gr};
+  }
+  if(p===EP.modSettings){ if(method==='PUT'){ Object.assign(M.mod,body); mockLog('info','config','Moderation settings updated'); } return {...M.mod}; }
+  if(p===EP.modEnrolled) return M.enrolled.map(x=>({...x}));
+  if(p.startsWith(EP.modEnrolled+'/')&&method==='DELETE'){ const id=tail(EP.modEnrolled+'/'); M.enrolled=M.enrolled.filter(x=>x.id!==id); mockLog('info','moderation',`Enrolled reference removed`); return null; }
+  if(p===EP.modMatches) return (g('tier')==='possible'?M.matches.possible:M.matches.high).map(x=>({...x}));
+  if(/^\/moderation\/matches\/[^/]+\/review$/.test(p)&&post){
+    const id=decodeURIComponent(p.split('/')[3]), i=M.matches.possible.findIndex(x=>x.id===id); if(i<0) bad('Detection not found',404);
+    const [m]=M.matches.possible.splice(i,1);
+    if(body.decision==='confirm'){
+      const us=M.users.find(x=>x.jid===m.user); if(us) us.warnings++;
+      M.history.unshift({ts:iso(Date.now()),user:m.user,user_name:m.user_name,group:'',group_name:m.group_name,action:'warning',dry_run:M.mod.dry_run,detail:'Confirmed by admin review'});
+      m.status='confirmed'; M.matches.high.unshift(m); mockLog('info','moderation',`Detection confirmed in ${m.group_name}`);
+    } else mockLog('info','moderation','Detection dismissed as false positive');
+    return {ok:true};
+  }
+  if(p===EP.modHistory) return paged(M.history);
+  if(p===EP.users){
+    const s=g('q').toLowerCase(), gr=g('group');
+    return paged(M.users.filter(x=>(!s||x.name.toLowerCase().includes(s))&&(!gr||x.group===gr)));
+  }
+  if(/^\/users\/[^/]+\/history$/.test(p)){ const jid=decodeURIComponent(p.split('/')[2]), us=M.users.find(x=>x.jid===jid); if(!us) bad('User not found',404); return {warnings:us.warnings,history:M.history.filter(h=>h.user===jid).slice(0,15)}; }
+  if(/^\/users\/[^/]+\/warnings\/reset$/.test(p)&&post){ const us=M.users.find(x=>x.jid===decodeURIComponent(p.split('/')[2])); if(!us) bad('User not found',404); us.warnings=0; mockLog('info','moderation','Warnings reset by admin'); return {ok:true}; }
+  if(p===EP.logs){
+    const s=g('q').toLowerCase(), lv=g('level'), ty=g('type');
+    return paged(M.logs.filter(l=>(!s||l.message.toLowerCase().includes(s))&&(!lv||l.level===lv)&&(!ty||l.type===ty)));
+  }
+  bad(`Demo mode: no handler for ${method} ${p}`,404);
+}
+
+/* ---------- boot ---------- */
+async function boot(){
+  if(MOCK){ state.base='mock'; showApp(); return; }
+  if(!state.base){ try{ state.base=(DEFAULT_API_BASE||localStorage.getItem('sonicos.apiBase')||'').replace(/\/+$/,''); }catch{ state.base=DEFAULT_API_BASE; } }
+  try{ await api(EP.me); showApp(); }
+  catch(e){ if(e.status===401) showLogin(); else showSetup(e.status===0?'Cannot reach that URL. Check that the bot is running and allows this origin (CORS).':e.message); }
+}
+$('#menu-btn').onclick=()=>{ const o=$('#side').classList.toggle('open'); $('#menu-btn').setAttribute('aria-expanded',String(o)); };
+$('#signout').onclick=async()=>{ if(MOCK){ toast('Demo mode: sign-out is disabled'); return; } try{ await api(EP.logout,{method:'POST'}); }catch{} showLogin(); };
+$('#off-retry').onclick=()=>{ refreshStatus().catch(()=>{}); };
+$('#off-url').onclick=()=>showSetup();
+boot();
+</script>
+
+<footer class="side-foot" style="margin-top:auto;padding-top:24px;border-top:1px solid var(--line2);">
+  <a href="https://github.com/SafwanGanz" target="_blank" rel="noopener noreferrer" class="lnk ul">built with ❤️ by SafwanGanz</a>
+</footer>
+
+</body>
+</html>

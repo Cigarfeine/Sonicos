@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sonicos/whatsapp-bot/internal/command"
-	stickerpkg "github.com/sonicos/whatsapp-bot/internal/sticker"
+	"github.com/SafwanGanz/Sonicos/internal/command"
+	stickerpkg "github.com/SafwanGanz/Sonicos/internal/sticker"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"

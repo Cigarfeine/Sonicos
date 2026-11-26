@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/sonicos/whatsapp-bot/internal/command"
-	"github.com/sonicos/whatsapp-bot/internal/sticker"
+	"github.com/SafwanGanz/Sonicos/internal/command"
+	"github.com/SafwanGanz/Sonicos/internal/sticker"
 )
 
 var stickerConverter = sticker.NewConverter(os.Getenv("FFMPEG_PATH"))
