@@ -322,7 +322,7 @@ async function run(btn,fn,okMsg){
 }
 
 /* ---------- state + API ---------- */
-const state = { base:'', status:null, statusAt:0, live:'off', es:null, poll:null };
+const state = { base:'', status:null, statusAt:0, live:'off', es:null, poll:null, onboarded:false };
 class ApiError extends Error{ constructor(m,status,data){ super(m); this.status=status; this.data=data; } }
 const bus = (()=>{ const h={}; return {
   on(t,f){ (h[t]=h[t]||new Set()).add(f); return ()=>h[t].delete(f); },
@@ -435,6 +435,22 @@ function showLogin(msg=''){
   };
 }
 function onUnauthorized(){ if(!$('#app').hidden) showLogin('Your session expired. Please sign in again.'); }
+
+function showOnboard(){
+  stopLive();
+  const s=showScreen(`<div class="logo"><i></i>SONICOS</div><h1>Connect WhatsApp.</h1><p>Link your bot to a WhatsApp account before using the dashboard. You can skip this and connect later from the Connection page.</p>
+  <div class="link-grid" id="onb-grid">
+    <div class="card link-card" id="onb-qr"></div>
+    <div class="card link-card" id="onb-pair"></div>
+  </div>
+  <div style="margin-top:24px;display:flex;justify-content:flex-end;gap:10px">
+    <button class="btn ghost" id="onb-skip" type="button">Skip for now</button>
+  </div>
+  <p class="eyebrow" style="margin:24px 0 0;word-break:break-all">${esc(state.base)}</p>`);
+  qrPanel($('#onb-qr'));
+  pairPanel($('#onb-pair'));
+  $('#onb-skip').onclick=()=>{ state.onboarded=true; try{ localStorage.setItem('sonicos.onboarded','1'); }catch{} showApp(); };
+}
 
 /* ---------- shell + router ---------- */
 const NAV=[['overview','Overview'],['connection','Connection'],['settings','Settings'],['commands','Commands'],['groups','Groups'],['moderation','Moderation'],['users','Users'],['logs','Activity']];
@@ -1028,9 +1044,10 @@ async function mockApi(path,method='GET',body){
 
 /* ---------- boot ---------- */
 async function boot(){
-  if(MOCK){ state.base='mock'; showApp(); return; }
+  if(MOCK){ state.base='mock'; state.onboarded=true; showApp(); return; }
   if(!state.base){ try{ state.base=(DEFAULT_API_BASE||localStorage.getItem('sonicos.apiBase')||'').replace(/\/+$/,''); }catch{ state.base=DEFAULT_API_BASE; } }
-  try{ await api(EP.me); showApp(); }
+  try{ state.onboarded = localStorage.getItem('sonicos.onboarded') === '1'; }catch{}
+  try{ await api(EP.me); if(state.onboarded){ showApp(); } else { showOnboard(); } }
   catch(e){ if(e.status===401) showLogin(); else showSetup(e.status===0?'Cannot reach that URL. Check that the bot is running and allows this origin (CORS).':e.message); }
 }
 $('#menu-btn').onclick=()=>{ const o=$('#side').classList.toggle('open'); $('#menu-btn').setAttribute('aria-expanded',String(o)); };
