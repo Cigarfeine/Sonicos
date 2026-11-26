@@ -21,6 +21,10 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /app/sonicos ./cmd/bot
 
+# Copy static dashboard assets into the runtime image
+RUN mkdir -p /app/cmd/static
+COPY cmd/static/index.html /app/cmd/static/index.html
+
 WORKDIR /app
 RUN mkdir -p /app/data
 

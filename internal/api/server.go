@@ -1091,7 +1091,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, "cmd/static/index.html")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(indexHTML))
 }
 
 // --- Helpers ---
